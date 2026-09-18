@@ -231,7 +231,7 @@ REMOTE_LIVE_SPECIAL_KEY_NAMES = frozenset(
     }
 )
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 GITHUB_REPO = "rslaltnpnr/ai-cat-assistant"
 UPDATE_CHECK_TIMEOUT_SECONDS = 5
 UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 60
@@ -1492,6 +1492,120 @@ def unique_teleport_destination(directory, filename):
     return candidate
 
 
+# --------------------------------------------------------------------------
+# "Kediyle Gönder": Windows Gezgini sag tik menusunden dogrudan telefona
+# dosya gonderme
+# --------------------------------------------------------------------------
+
+SEND_WITH_CAT_ARG = "--send-file"
+# Yalnizca 127.0.0.1'den erisilebilir (disaridan ULASILAMAZ) - sag tikla
+# baslatilan IKINCI bir surecin, zaten calisan ASIL surece dosya yolunu
+# iletmesi icindir; PIN/TLS gerekmez cunku zaten ayni makinede olmayan
+# hicbir surec bu porta baglanamaz.
+SEND_WITH_CAT_IPC_PORT = REMOTE_SERVER_PORT + 2
+SEND_WITH_CAT_MENU_KEY = r"Software\Classes\*\shell\AIKediAsistaniGonder"
+SEND_WITH_CAT_MENU_LABEL = "Kediyle Gönder"
+SEND_WITH_CAT_MAX_PENDING = 5
+
+
+def parse_send_file_arg(argv):
+    """argv icinde '--send-file <yol>' varsa yolu, yoksa None doner -
+    Windows Gezgini sag tik menusunden "%1" (tiklanan dosyanin tam yolu)
+    ile baslatildiginda kullanilir."""
+    for i, arg in enumerate(argv):
+        if arg == SEND_WITH_CAT_ARG and i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
+def send_with_cat_command_line(exe_path):
+    """Kayit defterine yazilacak komut satirini uretir - Windows Gezgini
+    "%1" yerine sag tiklanan dosyanin tam yolunu koyar."""
+    return f'"{exe_path}" {SEND_WITH_CAT_ARG} "%1"'
+
+
+def register_send_with_cat_context_menu():
+    """Windows Gezgini'nde herhangi bir dosyaya sag tiklaninca "Kediyle
+    Gönder" secenegini ekler - HKEY_CURRENT_USER altina yazdigi icin ADMIN
+    GEREKTIRMEZ. Idempotent: her baslangicta calisir, otomatik guncelleme
+    sonrasi exe'nin yeri degismis olsa bile komut satirini gunceller.
+    Yalnizca paketlenmis (frozen) .exe icin calisir - `python main.py` ile
+    gelistirme ortaminda calistirmanin dogru bir komut satiri uretmesi
+    mumkun olmadigi icin sessizce atlanir."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    try:
+        import winreg
+
+        command = send_with_cat_command_line(sys.executable)
+        key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, SEND_WITH_CAT_MENU_KEY)
+        winreg.SetValueEx(key, "", 0, winreg.REG_SZ, SEND_WITH_CAT_MENU_LABEL)
+        winreg.CloseKey(key)
+        cmd_key = winreg.CreateKey(
+            winreg.HKEY_CURRENT_USER, SEND_WITH_CAT_MENU_KEY + r"\command"
+        )
+        winreg.SetValueEx(cmd_key, "", 0, winreg.REG_SZ, command)
+        winreg.CloseKey(cmd_key)
+    except OSError:
+        pass  # kayit defterine yazilamadi - sessizce vazgec, uygulama normal calisir
+
+
+def send_file_to_running_instance(file_path):
+    """Zaten calisan bir kopya varsa (IPC portu dolu/dinleniyor), dosya
+    yolunu ona iletir ve True doner - cagiran taraf (main()) bu durumda
+    yeni bir GUI baslatmadan hemen cikmalidir. Baglanti kurulamazsa (henuz
+    calisan bir kopya yok) False doner - cagiran taraf bu surecin kendisi
+    "asil" kopya olacak sekilde devam eder."""
+    try:
+        with socket.create_connection(
+            ("127.0.0.1", SEND_WITH_CAT_IPC_PORT), timeout=2
+        ) as sock:
+            sock.sendall(file_path.encode("utf-8") + b"\n")
+        return True
+    except OSError:
+        return False
+
+
+class SendWithCatIpcServer(QThread):
+    """"Kediyle Gönder" sag tik menusunden ikinci bir surecin gonderdigi
+    dosya yollarini dinler (bkz. send_file_to_running_instance). Sadece
+    127.0.0.1'e baglanir - agdan ERISILEMEZ, bu yuzden PIN/TLS gerekmez."""
+
+    file_path_received = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._server = None
+
+    def run(self):
+        signal = self.file_path_received
+
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self):
+                try:
+                    line = self.rfile.readline(4096).decode("utf-8", errors="ignore").strip()
+                except (OSError, UnicodeDecodeError):
+                    return
+                if line:
+                    signal.emit(line)
+
+        try:
+            self._server = socketserver.ThreadingTCPServer(
+                ("127.0.0.1", SEND_WITH_CAT_IPC_PORT), Handler
+            )
+        except OSError:
+            return  # port zaten kullanimda - baska bir asil kopya calisiyor olmali
+        self._server.daemon_threads = True
+        try:
+            self._server.serve_forever()
+        except OSError:
+            pass
+
+    def stop(self):
+        if self._server is not None:
+            self._server.shutdown()
+
+
 class RemoteCommandServer(QThread):
     """
     Telefon uygulamasindan gelen komutlari alan basit bir yerel HTTP
@@ -1508,6 +1622,9 @@ class RemoteCommandServer(QThread):
       POST /file       {"pin", "filename", "content_base64"} - "Dosya Teleport": dosyayi
         received_files_dir() sabit klasorune kaydeder (ayni adda dosya varsa " (2)" vb.
         ekler, uzerine yazmaz)
+      POST /file/pending {"pin"} - "Kediyle Gönder" ile kuyruga alinan (bkz.
+        queue_outbound_file) dosyalari dondurur VE kuyruktan siler (her dosya
+        yalnizca bir kez teslim edilir)
     Gecerli bir /open, /media ya da /power istegi geldiginde ilgili sinyal
     (ana/GUI thread'ine Qt tarafindan otomatik kuyruklanir) yayinlanir.
     """
@@ -1531,6 +1648,10 @@ class RemoteCommandServer(QThread):
         # append/otomatik-trim ile) referans olarak paylasir.
         self.alerts = deque(maxlen=self.MAX_ALERTS)
         self._next_alert_id = 1
+        # "Kediyle Gönder" ile kuyruga alinan, telefonun bir sonraki
+        # /file/pending yoklamasinda alacagi dosyalar - alerts ile ayni
+        # capraz-thread paylasim deseni (bkz. queue_outbound_file).
+        self.pending_outbound_files = deque(maxlen=SEND_WITH_CAT_MAX_PENDING)
         # IP -> {"last_seen", "last_endpoint", "count"} - PIN'i basariyla
         # dogrulamis en son istemciler (kalici bir "oturum" kavrami yok,
         # her istek kendi basina PIN ile dogrulanir - bu yuzden "aktif
@@ -1555,10 +1676,19 @@ class RemoteCommandServer(QThread):
         )
         self._next_alert_id += 1
 
+    def queue_outbound_file(self, filename, content_b64):
+        """Ana/GUI thread'inden (CatCharacter.queue_outbound_file uzerinden,
+        "Kediyle Gönder" sag tik menusuyle) cagrilir - telefon bir sonraki
+        /file/pending yoklamasinda bu dosyayi alir."""
+        self.pending_outbound_files.append(
+            {"filename": filename, "content_base64": content_b64}
+        )
+
     def run(self):
         config = self.config
         history = self.history
         alerts = self.alerts
+        pending_outbound_files = self.pending_outbound_files
         recent_connections = self.recent_connections
         screenshot_history = self.screenshot_history
         open_signal = self.command_received
@@ -1594,6 +1724,7 @@ class RemoteCommandServer(QThread):
                     "/alerts",
                     "/clipboard",
                     "/file",
+                    "/file/pending",
                 ):
                     self._send_json(404, {"error": "bulunamadi"})
                     return
@@ -1755,6 +1886,13 @@ class RemoteCommandServer(QThread):
                     saved_name = os.path.basename(destination)
                     file_signal.emit(saved_name)
                     self._send_json(200, {"status": "ok", "saved_as": saved_name})
+                    return
+
+                if self.path == "/file/pending":
+                    files = []
+                    while pending_outbound_files:
+                        files.append(pending_outbound_files.popleft())
+                    self._send_json(200, {"status": "ok", "files": files})
                     return
 
                 # self.path == "/alerts"
@@ -3125,6 +3263,11 @@ class CatCharacter(QWidget):
         self.live_control_server.session_ended.connect(self._on_live_control_ended)
         self.live_control_server.start()
 
+        register_send_with_cat_context_menu()
+        self.send_with_cat_ipc_server = SendWithCatIpcServer(self)
+        self.send_with_cat_ipc_server.file_path_received.connect(self.queue_outbound_file)
+        self.send_with_cat_ipc_server.start()
+
         self._hotkey_signal = register_global_hotkey(self._open_bubble)
 
         self.tray_icon = None
@@ -3348,6 +3491,44 @@ class CatCharacter(QWidget):
                 f'"{REMOTE_FILE_TELEPORT_DIR_NAME}" klasörüne kaydedildi.',
                 QSystemTrayIcon.MessageIcon.Information,
                 4000,
+            )
+
+    def queue_outbound_file(self, path):
+        """"Kediyle Gönder" (Windows Gezgini sag tik menusu ya da ayni
+        surecteki SendWithCatIpcServer) ile cagrilir - dosyayi okuyup
+        RemoteCommandServer'daki kuyruga ekler, telefon bir sonraki
+        /file/pending yoklamasinda alir. Bilgisayarin basinda biri varsa
+        acik bir bildirimle bilgilendirilir (sessiz/gizli calismaz)."""
+        filename = os.path.basename(path)
+        if not os.path.isfile(path):
+            self._notify_send_with_cat_failure(filename, "dosya bulunamadı")
+            return
+        try:
+            if os.path.getsize(path) > REMOTE_FILE_TELEPORT_MAX_BYTES:
+                self._notify_send_with_cat_failure(filename, "dosya çok büyük (en fazla 25 MB)")
+                return
+            with open(path, "rb") as f:
+                content_b64 = base64.b64encode(f.read()).decode("ascii")
+        except OSError as exc:
+            self._notify_send_with_cat_failure(filename, str(exc))
+            return
+        self.remote_server.queue_outbound_file(filename, content_b64)
+        if self.tray_icon is not None:
+            self.tray_icon.showMessage(
+                "Kediyle Gönder",
+                f'"{filename}" telefonunuza gönderilmek üzere kuyruğa alındı - '
+                "telefon bir sonraki kontrolünde indirecek.",
+                QSystemTrayIcon.MessageIcon.Information,
+                4000,
+            )
+
+    def _notify_send_with_cat_failure(self, filename, reason):
+        if self.tray_icon is not None:
+            self.tray_icon.showMessage(
+                "Kediyle Gönder",
+                f'"{filename}" gönderilemedi: {reason}.',
+                QSystemTrayIcon.MessageIcon.Warning,
+                5000,
             )
 
     def _on_live_control_started(self):
@@ -4411,6 +4592,14 @@ class CatCharacter(QWidget):
 
 def main():
     install_crash_handler()
+
+    # Windows Gezgini sag tik menusunden "Kediyle Gönder" ile baslatildiysa
+    # ve uygulama ZATEN calisiyorsa, dosya yolunu o calisan kopyaya iletip
+    # burada hemen cikilir - ikinci bir GUI/simge acilmaz.
+    send_file_path = parse_send_file_arg(sys.argv)
+    if send_file_path and send_file_to_running_instance(send_file_path):
+        return
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 
@@ -4418,8 +4607,12 @@ def main():
     cat = CatCharacter(config)
     cat.show()
 
+    if send_file_path:
+        cat.queue_outbound_file(send_file_path)
+
     app.aboutToQuit.connect(cat.remote_server.stop)
     app.aboutToQuit.connect(cat.live_control_server.stop)
+    app.aboutToQuit.connect(cat.send_with_cat_ipc_server.stop)
 
     sys.exit(app.exec())
 

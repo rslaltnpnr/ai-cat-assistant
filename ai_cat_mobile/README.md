@@ -233,6 +233,12 @@ tum masaustunde degil, **uygulamanin kendi ekraninda** rastgele gezinir
   kaydedilir - uygulama bir dahaki acilista "onceki oturumda beklenmeyen
   bir hata olustu" diye acik bir bildirim gosterir, boylece bir cokme
   sessizce kaybolup gitmez.
+- **Kediyle Gönder** (masaustunde baslatilir): bilgisayarda bir dosyaya
+  sag tiklayip "Kediyle Gönder" secilince, Dosya Teleport'un TERS yonu -
+  dosya telefona geliyor. Telefon tarafi ayrica bir sey yapmaz: mevcut
+  45 saniyelik arka plan yoklama dongusu (`POST /file/pending`) her
+  bekleyen dosyayi otomatik indirip `Android/data/.../Bilgisayardan
+  Gelenler` klasorune kaydeder ve bir yerel bildirim gosterir.
 
 ## 1) Gerekli araclari kurun (Windows)
 
