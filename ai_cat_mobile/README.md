@@ -228,6 +228,11 @@ tum masaustunde degil, **uygulamanin kendi ekraninda** rastgele gezinir
   tepsisinden acik bir bildirim gorur. `POST /file` uc noktasi
   (RemoteCommandServer, mevcut PIN + sertifika parmak izi korumasiyle)
   uzerinden 25 MB'a kadar dosya kabul eder.
+- **Cokme gunlugu**: beklenmeyen bir hata olursa (masaustu suruumundeki
+  crash.log ile ayni amac) cihazda kalici bir `crash.log` dosyasina
+  kaydedilir - uygulama bir dahaki acilista "onceki oturumda beklenmeyen
+  bir hata olustu" diye acik bir bildirim gosterir, boylece bir cokme
+  sessizce kaybolup gitmez.
 
 ## 1) Gerekli araclari kurun (Windows)
 
