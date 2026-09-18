@@ -47,11 +47,13 @@ from main import (
     normalize_live_key_name,
     normalize_live_mouse_button,
     parse_hh_mm,
+    parse_send_file_arg,
     prune_old_backups,
     record_connection,
     resolve_auto_theme_mode,
     sanitize_teleport_filename,
     select_context_turns,
+    send_with_cat_command_line,
     should_fire_rule,
     should_run_auto_backup,
     tail_access_log,
@@ -1117,3 +1119,26 @@ class TestUniqueTeleportDestination:
                 f.write("x")
             second = unique_teleport_destination(tmp_dir, "not.txt")
             assert second.endswith(".txt")
+
+
+class TestParseSendFileArg:
+    """"Kediyle Gönder" - Windows Gezgini sag tik menusunden "--send-file
+    <yol>" ile baslatildiginda argv'den dosya yolunun cikarilmasi."""
+
+    def test_arg_varsa_yolu_doner(self):
+        argv = ["AI-Kedi-Asistani.exe", "--send-file", "C:\\Users\\biri\\rapor.pdf"]
+        assert parse_send_file_arg(argv) == "C:\\Users\\biri\\rapor.pdf"
+
+    def test_arg_yoksa_none_doner(self):
+        assert parse_send_file_arg(["AI-Kedi-Asistani.exe"]) is None
+
+    def test_arg_son_elemansa_deger_eksikse_none_doner(self):
+        assert parse_send_file_arg(["AI-Kedi-Asistani.exe", "--send-file"]) is None
+
+
+class TestSendWithCatCommandLine:
+    def test_exe_yolunu_tirnak_icine_alir_ve_percent1_kullanir(self):
+        command = send_with_cat_command_line("C:\\Program Files\\AI-Kedi-Asistani.exe")
+        assert command == (
+            '"C:\\Program Files\\AI-Kedi-Asistani.exe" --send-file "%1"'
+        )

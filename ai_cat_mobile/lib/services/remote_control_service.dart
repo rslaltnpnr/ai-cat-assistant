@@ -54,6 +54,16 @@ class HistoryFetchResult {
   const HistoryFetchResult(this.fingerprint, this.entries);
 }
 
+/// [fetchPendingFiles] sonucu: parmak izinin yani sira, bilgisayarda
+/// "Kediyle Gönder" (sag tik menusu) ile kuyruga alinmis, henuz telefona
+/// inmemis dosyalari (her biri {"filename", "content_base64"}) tasir.
+class PendingFilesResult {
+  final String fingerprint;
+  final List<Map<String, dynamic>> files;
+
+  const PendingFilesResult(this.fingerprint, this.files);
+}
+
 /// [fetchClipboard] sonucu: parmak izinin yani sira bilgisayarin panosundaki
 /// metni tasir.
 class ClipboardFetchResult {
@@ -518,6 +528,41 @@ class RemoteControlService {
       );
     } catch (_) {
       throw RemoteControlException('Sunucu yaniti okunamadı.');
+    }
+  }
+
+  /// "Kediyle Gönder" ile bilgisayarda kuyruga alinmis dosyalari yoklar -
+  /// bir sonucu olan her dosya bilgisayar tarafinda kuyruktan SILINIR
+  /// (yalnizca bir kez teslim edilir), bu yuzden bu metod cagrildiginda
+  /// donen dosyalar mutlaka kaydedilmelidir (bkz. IncomingFileService).
+  Future<PendingFilesResult> fetchPendingFiles({
+    required String ip,
+    required int port,
+    required String pin,
+    required String pinnedFingerprint,
+  }) async {
+    if (ip.trim().isEmpty) {
+      throw RemoteControlException(
+        'Once bilgisayarin IP adresini ve PIN kodunu gir.',
+      );
+    }
+    final response = await _post(
+      ip: ip,
+      port: port,
+      path: '/file/pending',
+      body: {'pin': pin},
+      pinnedFingerprint: pinnedFingerprint,
+      connectTimeout: const Duration(seconds: 8),
+      sendTimeout: const Duration(seconds: 30),
+      responseTimeout: const Duration(seconds: 30),
+    );
+    _throwForCommonErrors(response);
+    try {
+      final data = jsonDecode(response.body);
+      final files = List<Map<String, dynamic>>.from(data['files'] as List);
+      return PendingFilesResult(response.fingerprint, files);
+    } catch (_) {
+      throw RemoteControlException('Bekleyen dosyalar okunamadı.');
     }
   }
 

@@ -249,6 +249,17 @@ karakteri (PyQt6).
   yol bilesenlerinden (orn. "../") arindirilir. `POST /file` uc noktasi
   (ayni PIN+TLS korumali REST sunucusu uzerinden) en fazla 25 MB kabul
   eder. Dosya gelince sistem tepsisinden acik bir bildirim gosterilir.
+- **Kediyle Gönder**: Windows Gezgini'nde herhangi bir dosyaya sag
+  tiklayinca cikan "Kediyle Gönder" secenegiyle, Dosya Teleport'un TERS
+  yonu - dosya TELEFONA gonderilir. Sag tik menusu ilk acilista HKEY_
+  CURRENT_USER altina kaydedilir (admin gerektirmez). Uygulama zaten
+  calisiyorsa, ikinci bir surec acilmadan (sadece yerelde, 127.0.0.1'de
+  dinleyen bir kanaldan) dosya yolu calisan kopyaya iletilir. Dosya
+  kuyruga alinir; telefon bir sonraki yoklamasinda (`POST /file/pending`)
+  onu cekip cihaza kaydeder - masaustu telefona DOGRUDAN baglanamadigi
+  icin (telefon sunucu calistirmiyor) teslimat telefonun kendi yoklama
+  dongusune birakilir. En fazla 5 dosya kuyrukta bekler, her biri en
+  fazla 25 MB; kuyruga alininca sistem tepsisinden bildirim gosterilir.
 - **Hakkinda**: sag tik menusundeki "Hakkinda" ile surum numarasini ve
   proje deposunun linkini gorebilirsiniz.
 

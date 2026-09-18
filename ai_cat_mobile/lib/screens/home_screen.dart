@@ -12,6 +12,7 @@ import '../models/remote_profile.dart';
 import '../services/backup_service.dart';
 import '../services/command_queue_service.dart';
 import '../services/crash_log_service.dart';
+import '../services/incoming_file_service.dart';
 import '../services/gemini_service.dart';
 import '../services/history_service.dart';
 import '../services/notification_history_service.dart';
@@ -55,6 +56,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final _remoteService = RemoteControlService();
   final _notifications = ReminderService();
   final _notificationHistory = NotificationHistoryService();
+  final _incomingFiles = IncomingFileService();
   final _commandQueue = CommandQueueService();
 
   SettingsService? _settings;
@@ -359,6 +361,7 @@ class _HomeScreenState extends State<HomeScreen> {
           .toList();
       await _updateWidgetStatus(profileName: profile.name, connected: true);
       await _flushQueuedCommands(updatedProfile);
+      await _checkPendingFiles(updatedProfile);
     } catch (_) {
       // bilgisayar kapali/ag disinda olabilir - sessizce yok say
       await _updateWidgetStatus(profileName: profile.name, connected: false);
@@ -396,6 +399,35 @@ class _HomeScreenState extends State<HomeScreen> {
         : 'Bekleyen $sentCount bağlantı gönderildi.';
     await _notifications.showAlert(title: title, message: message);
     await _notificationHistory.add(title: title, message: message);
+  }
+
+  /// Bilgisayarda "Kediyle Gönder" (sag tik menusu) ile kuyruga alinmis
+  /// dosya var mi diye kontrol eder - varsa cihaza kaydedip (bkz.
+  /// IncomingFileService) yerel bir bildirim gosterir. Her basarili
+  /// /alerts yoklamasinin hemen ardindan (_flushQueuedCommands ile ayni
+  /// yerde) cagrilir, boylece ayrica bir zamanlayiciya gerek kalmaz.
+  Future<void> _checkPendingFiles(RemoteProfile profile) async {
+    try {
+      final result = await _remoteService.fetchPendingFiles(
+        ip: profile.ip,
+        port: profile.port,
+        pin: profile.pin,
+        pinnedFingerprint: profile.certFingerprint,
+      );
+      if (result.files.isEmpty) return;
+      final saved = await _incomingFiles.saveAll(result.files);
+      if (saved.isEmpty) return;
+      final title = '${profile.name} - Kediyle Gönderildi';
+      final message = saved.length == 1
+          ? '"${saved.first}" bilgisayardan geldi.'
+          : '${saved.length} dosya bilgisayardan geldi.';
+      await _notifications.showAlert(title: title, message: message);
+      await _notificationHistory.add(title: title, message: message);
+    } catch (_) {
+      // bilgisayar erisilemezse ya da ozellik henuz desteklenmiyorsa
+      // (eski masaustu suruumu) sessizce yoksay - bu bir sonraki
+      // yoklamada tekrar denenir.
+    }
   }
 
   /// Ana ekran widget'indaki baglanti durumu satirini gunceller. Widget
