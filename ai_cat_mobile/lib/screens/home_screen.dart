@@ -11,6 +11,7 @@ import '../models/chat_entry.dart';
 import '../models/remote_profile.dart';
 import '../services/backup_service.dart';
 import '../services/command_queue_service.dart';
+import '../services/crash_log_service.dart';
 import '../services/gemini_service.dart';
 import '../services/history_service.dart';
 import '../services/notification_history_service.dart';
@@ -111,6 +112,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final settingsForBackup = _settings;
     if (settingsForBackup != null) {
       BackupService().maybeAutoBackup(settingsForBackup);
+      _maybeShowCrashNotice(settingsForBackup);
     }
     final pendingUrl = _pendingSharedUrl;
     if (pendingUrl != null) {
@@ -133,6 +135,31 @@ class _HomeScreenState extends State<HomeScreen> {
         if (mounted) _handleWidgetAction(pendingWidgetAction);
       });
     }
+  }
+
+  /// Masaustu suruumunun crash.log'una benzer sekilde: gecen seferki bir
+  /// cokme (varsa) sessizce kaybolmaz, acik bir bildirimle gosterilir.
+  /// CrashLogService (main.dart'taki genel hata yakalayicilarla beslenir)
+  /// ile SettingsService.lastSeenCrash karsilastirilir - boylece AYNI
+  /// cokme her acilista tekrar tekrar bildirilmez.
+  Future<void> _maybeShowCrashNotice(SettingsService settings) async {
+    final crashTime = await CrashLogService.instance.lastCrashTime();
+    if (crashTime == null) return;
+    final lastSeen = DateTime.tryParse(settings.lastSeenCrash ?? '');
+    if (lastSeen != null && !crashTime.isAfter(lastSeen)) return;
+    settings.lastSeenCrash = crashTime.toIso8601String();
+    if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Önceki oturumda beklenmeyen bir hata oluştu, günlüğe kaydedildi.',
+          ),
+          duration: Duration(seconds: 6),
+        ),
+      );
+    });
   }
 
   /// Ana ekran widget'indaki "Sohbet"/"Kumanda" dugmelerinden biriyle

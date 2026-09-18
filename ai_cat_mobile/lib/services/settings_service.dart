@@ -39,6 +39,7 @@ class SettingsService {
       'notification_vibration_pattern';
   static const _keyLanguageCode = 'language_code';
   static const _keyScreenWatchOverlayEnabled = 'screen_watch_overlay_enabled';
+  static const _keyLastSeenCrash = 'last_seen_crash';
 
   final SharedPreferences _prefs;
 
@@ -139,6 +140,19 @@ class SettingsService {
       _prefs.remove(_keyAutoBackupLast);
     } else {
       _prefs.setString(_keyAutoBackupLast, value);
+    }
+  }
+
+  /// Kullaniciya en son gosterilen "gecen sefer coktu" bildiriminin zaman
+  /// damgasi (ISO 8601) - CrashLogService.lastCrashTime() ile karsilastirilir,
+  /// boylece ayni cokme her acilista tekrar tekrar bildirilmez (bkz.
+  /// HomeScreen._maybeShowCrashNotice).
+  String? get lastSeenCrash => _prefs.getString(_keyLastSeenCrash);
+  set lastSeenCrash(String? value) {
+    if (value == null) {
+      _prefs.remove(_keyLastSeenCrash);
+    } else {
+      _prefs.setString(_keyLastSeenCrash, value);
     }
   }
 

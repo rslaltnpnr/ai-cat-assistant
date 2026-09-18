@@ -9,11 +9,36 @@ import 'overlay/screen_watch_overlay_app.dart';
 import 'screens/app_lock_screen.dart';
 import 'screens/home_screen.dart';
 import 'services/auto_theme.dart';
+import 'services/crash_log_service.dart';
 import 'services/screen_watch_overlay_service.dart';
 import 'services/settings_service.dart';
 import 'theme/app_colors.dart';
 
+/// Masaustu suruumundeki install_crash_handler() ile AYNI amac: beklenmeyen
+/// bir hata sessizce kaybolmasin, cihazda kalici bir dosyaya (crash.log)
+/// yazilsin ve bir sonraki acilista kullaniciya bildirilsin (bkz.
+/// HomeScreen._maybeShowCrashNotice). Iki ayri Flutter hata yolu var:
+/// FlutterError.onError widget agacinda (build/layout/paint) yakalanan
+/// hatalar icin, platformDispatcher.onError ise bunlarin disinda kalan
+/// (orn. bir Future icinde yakalanmamis) hatalar icindir - ikisi birden
+/// baglanmazsa bir sinif hata sessizce atlanir.
+void _installCrashHandler() {
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+    CrashLogService.instance.log(
+      details.exception,
+      details.stack ?? StackTrace.current,
+    );
+  };
+  WidgetsBinding.instance.platformDispatcher.onError = (error, stack) {
+    CrashLogService.instance.log(error, stack);
+    return true;
+  };
+}
+
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  _installCrashHandler();
   runApp(const AiCatApp());
 }
 
