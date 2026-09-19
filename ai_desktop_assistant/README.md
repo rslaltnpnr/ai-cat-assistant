@@ -262,6 +262,14 @@ karakteri (PyQt6).
   fazla 25 MB; kuyruga alininca sistem tepsisinden bildirim gosterilir.
 - **Hakkinda**: sag tik menusundeki "Hakkinda" ile surum numarasini ve
   proje deposunun linkini gorebilirsiniz.
+- **Gercek yuruyus animasyonu**: kedi normal durumdayken artik sabit bir
+  gorsel yerine, Blender'da render edilmis gercek bir yuruyus kare
+  dizisini (`fuff_walk_000.png`, `fuff_walk_001.png`, ...) dondurur.
+  Kareler bir skin'de bulunamazsa sessizce eski statik goruntuye geri
+  duser - mevcut skin'leri bozmaz.
+- **Pati izi loading animasyonu**: konusma balonunda Gemini'den yanit
+  beklenirken, disaridan gorsel dosyasi gerektirmeyen, art arda parlayan
+  pati izlerinden olusan bir loading gostergesi gorunur.
 
 ## Kurulum ve calistirma
 

@@ -12,9 +12,11 @@ enum CatState { norm, zzz, smile, stern, fear }
 /// dizisi (fuff_walk_000.png, fuff_walk_001.png, ...) dondurulur - bkz.
 /// masaustu surumundeki ayni mantik (main.py, CatCharacter._load_walk_frames).
 class CatSprite extends StatefulWidget {
-  /// Blender "Walk" action'inin render edildigi kare sayisi. Masaustu
-  /// tarafiyla ayni kaynaktan uretildigi icin sabit kodlanmistir.
-  static const int walkFrameCount = 28;
+  /// Blender "Walk" action'inden render edilen, rig'in orijinal
+  /// animasyonundaki birkac bozuk kare (bacak gerilmesi glitch'i)
+  /// ayiklandiktan sonra kalan temiz kare sayisi. Masaustu tarafiyla
+  /// ayni kaynaktan uretildigi icin sabit kodlanmistir.
+  static const int walkFrameCount = 23;
   static const Duration walkFrameInterval = Duration(milliseconds: 90);
 
   /// Widget testlerinde surekli/sonsuz bir Timer, `pumpAndSettle()`'in hic
