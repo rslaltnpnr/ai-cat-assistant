@@ -19,6 +19,7 @@ import hmac
 import http.server
 import ipaddress
 import json
+import math
 import os
 import random
 import socket
@@ -35,7 +36,7 @@ from collections import deque
 from datetime import datetime, timedelta
 from urllib.parse import urlencode, urlparse
 
-from PyQt6.QtCore import QObject, QPoint, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QPoint, QPointF, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
     QActionGroup,
@@ -191,6 +192,14 @@ STATE_FILES = {
     "fear": "fuff_fear.png",
 }
 
+# "norm" durumunda kedi statik durmak yerine gercekten yuruyormus gibi
+# bu kare dizisini dondurur (bkz. CatCharacter._load_walk_frames). Dosyalar
+# yoksa (henuz eklenmemis/ozel bir skin'de bulunmuyorsa) sessizce statik
+# "norm" gorseline geri duser - mevcut skin'leri bozmaz.
+WALK_FRAME_PATTERN = "fuff_walk_{:03d}.png"
+WALK_FRAME_MAX_COUNT = 60
+WALK_FRAME_INTERVAL_MS = 90
+
 REMOTE_SERVER_PORT = 8765
 REMOTE_MAX_FAILED_ATTEMPTS = 5
 REMOTE_LOCKOUT_SECONDS = 60
@@ -231,7 +240,7 @@ REMOTE_LIVE_SPECIAL_KEY_NAMES = frozenset(
     }
 )
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 GITHUB_REPO = "rslaltnpnr/ai-cat-assistant"
 UPDATE_CHECK_TIMEOUT_SECONDS = 5
 UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 60
@@ -2667,6 +2676,68 @@ DEFAULT_QUICK_QUESTIONS = [
 
 
 # --------------------------------------------------------------------------
+# Pati izi loading animasyonu
+# --------------------------------------------------------------------------
+
+class PawLoadingIndicator(QWidget):
+    """Kedi "dusunurken" gosterilen, art arda parlayan pati izlerinden
+    olusan hafif bir loading animasyonu. Disaridan gorsel dosyasi
+    gerektirmez - tamami QPainter ile cizilir."""
+
+    PAW_COUNT = 4
+    TICK_MS = 40
+    PHASE_STEP = 0.16
+    PHASE_OFFSET = 0.9
+
+    def __init__(self, color="#5AAAFF", parent=None):
+        super().__init__(parent)
+        self._color = QColor(color)
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self.hide()
+
+    def start(self):
+        self._phase = 0.0
+        self._timer.start(self.TICK_MS)
+        self.show()
+
+    def stop(self):
+        self._timer.stop()
+        self.hide()
+
+    def _tick(self):
+        self._phase += self.PHASE_STEP
+        self.update()
+
+    def _draw_paw(self, painter, cx, cy, scale, opacity):
+        color = QColor(self._color)
+        color.setAlphaF(max(0.0, min(1.0, opacity)))
+        painter.setBrush(QBrush(color))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(QPointF(cx, cy + 5 * scale), 9 * scale, 7 * scale)
+        for dx, dy in ((-8, -6), (-3, -10), (3, -10), (8, -6)):
+            painter.drawEllipse(
+                QPointF(cx + dx * scale, cy + dy * scale), 4 * scale, 5.5 * scale
+            )
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        spacing = self.width() / (self.PAW_COUNT + 1)
+        cy = self.height() / 2
+        for i in range(self.PAW_COUNT):
+            wave = (math.sin(self._phase - i * self.PHASE_OFFSET) + 1) / 2
+            self._draw_paw(
+                painter,
+                spacing * (i + 1),
+                cy,
+                scale=0.75 + 0.35 * wave,
+                opacity=0.25 + 0.75 * wave,
+            )
+
+
+# --------------------------------------------------------------------------
 # Konusma balonu
 # --------------------------------------------------------------------------
 
@@ -2718,6 +2789,10 @@ class ChatBubble(QWidget):
         self.response_area.setPlaceholderText("Bana ekraninda ne oldugunu sor...")
         layout.addWidget(self.response_area, 1)
 
+        self.paw_loading = PawLoadingIndicator(parent=container)
+        self.paw_loading.setFixedHeight(32)
+        layout.addWidget(self.paw_loading)
+
         self.quick_questions_box = QComboBox()
         self.quick_questions_box.addItem("Hazir sorular...")
         self.quick_questions_box.addItems(DEFAULT_QUICK_QUESTIONS)
@@ -2763,13 +2838,16 @@ class ChatBubble(QWidget):
     def show_thinking(self):
         self.ask_button.setEnabled(False)
         self.response_area.setPlainText("Dusunuyor...")
+        self.paw_loading.start()
 
     def show_response(self, text):
         self.ask_button.setEnabled(True)
+        self.paw_loading.stop()
         self.response_area.setPlainText(text)
 
     def show_error(self, text):
         self.ask_button.setEnabled(True)
+        self.paw_loading.stop()
         self.response_area.setPlainText(f"⚠ {text}")
 
 
@@ -3208,6 +3286,10 @@ class CatCharacter(QWidget):
 
         self.scale_factor = self.config.get("scale_percent") / 100.0
         self.pixmaps = {}
+        self.walk_frames = []
+        self._walk_frame_index = 0
+        self.walk_anim_timer = QTimer(self)
+        self.walk_anim_timer.timeout.connect(self._advance_walk_frame)
         self._load_pixmaps()
 
         self.state = "norm"
@@ -3292,6 +3374,31 @@ class CatCharacter(QWidget):
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
+        self.walk_frames = self._load_walk_frames(skin_dir)
+
+    def _load_walk_frames(self, skin_dir):
+        """"norm" durumunda oynatilacak yuruyus kare dizisini yukler.
+        Dosyalar (fuff_walk_000.png, fuff_walk_001.png, ...) bulunamazsa
+        bos liste doner - bu durumda CatCharacter statik "norm" gorseline
+        geri duser, mevcut/eksik skin'leri bozmaz."""
+        frames = []
+        size = max(24, int(self.SPRITE_BASE_SIZE * self.scale_factor))
+        for i in range(WALK_FRAME_MAX_COUNT):
+            path = os.path.join(skin_dir, WALK_FRAME_PATTERN.format(i))
+            if not os.path.isfile(path):
+                break
+            raw = QPixmap(path)
+            if raw.isNull():
+                break
+            frames.append(
+                raw.scaled(
+                    size,
+                    size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        return frames
 
     def _position_window(self):
         screen = QApplication.primaryScreen().availableGeometry()
@@ -3311,9 +3418,24 @@ class CatCharacter(QWidget):
 
     def _set_state(self, state):
         self.state = state
-        pixmap = self.pixmaps.get(state, self.pixmaps["norm"])
-        self.current_pixmap = pixmap
-        self.setFixedSize(pixmap.size())
+        if state == "norm" and self.walk_frames:
+            self._walk_frame_index = 0
+            self.current_pixmap = self.walk_frames[0]
+            self.setFixedSize(self.current_pixmap.size())
+            if not self.walk_anim_timer.isActive():
+                self.walk_anim_timer.start(WALK_FRAME_INTERVAL_MS)
+        else:
+            self.walk_anim_timer.stop()
+            pixmap = self.pixmaps.get(state, self.pixmaps["norm"])
+            self.current_pixmap = pixmap
+            self.setFixedSize(pixmap.size())
+        self.update()
+
+    def _advance_walk_frame(self):
+        if not self.walk_frames:
+            return
+        self._walk_frame_index = (self._walk_frame_index + 1) % len(self.walk_frames)
+        self.current_pixmap = self.walk_frames[self._walk_frame_index]
         self.update()
 
     def paintEvent(self, event):
