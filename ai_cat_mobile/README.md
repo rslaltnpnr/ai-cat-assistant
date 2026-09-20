@@ -239,14 +239,6 @@ tum masaustunde degil, **uygulamanin kendi ekraninda** rastgele gezinir
   45 saniyelik arka plan yoklama dongusu (`POST /file/pending`) her
   bekleyen dosyayi otomatik indirip `Android/data/.../Bilgisayardan
   Gelenler` klasorune kaydeder ve bir yerel bildirim gosterir.
-- **Gercek yuruyus animasyonu**: kedi "norm" durumundayken (dolasirken)
-  artik sabit bir gorsel yerine, Blender'da render edilmis gercek bir
-  yuruyus kare dizisini (`fuff_walk_000.png`, ...) dondurur - masaustu
-  suruumuyle ayni kaynaktan uretilmistir. Kareler bulunamazsa sessizce
-  eski statik goruntuye geri duser.
-- **Pati izi loading animasyonu**: bir soru gonderilip yanit beklenirken,
-  disaridan gorsel dosyasi gerektirmeyen, art arda parlayan pati
-  izlerinden olusan bir loading gostergesi gorunur.
 
 ## 1) Gerekli araclari kurun (Windows)
 
