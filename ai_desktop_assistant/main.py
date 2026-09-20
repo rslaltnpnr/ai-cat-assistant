@@ -19,7 +19,6 @@ import hmac
 import http.server
 import ipaddress
 import json
-import math
 import os
 import random
 import socket
@@ -36,17 +35,7 @@ from collections import deque
 from datetime import datetime, timedelta
 from urllib.parse import urlencode, urlparse
 
-from PyQt6.QtCore import (
-    QEasingCurve,
-    QObject,
-    QPoint,
-    QPointF,
-    QPropertyAnimation,
-    Qt,
-    QThread,
-    QTimer,
-    pyqtSignal,
-)
+from PyQt6.QtCore import QObject, QPoint, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
     QActionGroup,
@@ -202,24 +191,6 @@ STATE_FILES = {
     "fear": "fuff_fear.png",
 }
 
-# "norm" durumunda kedi statik durmak yerine gercekten yuruyormus gibi
-# bu kare dizisini dondurur (bkz. CatCharacter._load_walk_frames). Dosyalar
-# yoksa (henuz eklenmemis/ozel bir skin'de bulunmuyorsa) sessizce statik
-# "norm" gorseline geri duser - mevcut skin'leri bozmaz.
-WALK_FRAME_PATTERN = "fuff_walk_{:03d}.png"
-WALK_FRAME_MAX_COUNT = 60
-WALK_FRAME_INTERVAL_MS = 90
-
-# Kedi "norm" durumundayken (yuruyus animasyonu varsa) olduğu yerde saymak
-# yerine ekran uzerinde gercekten dolasir - bkz. CatCharacter._roam_move.
-# Mobil surumdeki RoamingCat ile ayni mantik: rastgele bir hedefe, mesafeyle
-# orantili bir surede yumusak gecis yapip biraz bekler, tekrar dener.
-ROAM_MIN_DELAY_MS = 2000
-ROAM_MAX_DELAY_MS = 6000
-ROAM_MS_PER_PIXEL = 6
-ROAM_MIN_DURATION_MS = 600
-ROAM_MAX_DURATION_MS = 3500
-
 REMOTE_SERVER_PORT = 8765
 REMOTE_MAX_FAILED_ATTEMPTS = 5
 REMOTE_LOCKOUT_SECONDS = 60
@@ -260,7 +231,7 @@ REMOTE_LIVE_SPECIAL_KEY_NAMES = frozenset(
     }
 )
 
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.8.2"
 GITHUB_REPO = "rslaltnpnr/ai-cat-assistant"
 UPDATE_CHECK_TIMEOUT_SECONDS = 5
 UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 60
@@ -2696,68 +2667,6 @@ DEFAULT_QUICK_QUESTIONS = [
 
 
 # --------------------------------------------------------------------------
-# Pati izi loading animasyonu
-# --------------------------------------------------------------------------
-
-class PawLoadingIndicator(QWidget):
-    """Kedi "dusunurken" gosterilen, art arda parlayan pati izlerinden
-    olusan hafif bir loading animasyonu. Disaridan gorsel dosyasi
-    gerektirmez - tamami QPainter ile cizilir."""
-
-    PAW_COUNT = 4
-    TICK_MS = 40
-    PHASE_STEP = 0.16
-    PHASE_OFFSET = 0.9
-
-    def __init__(self, color="#5AAAFF", parent=None):
-        super().__init__(parent)
-        self._color = QColor(color)
-        self._phase = 0.0
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
-        self.hide()
-
-    def start(self):
-        self._phase = 0.0
-        self._timer.start(self.TICK_MS)
-        self.show()
-
-    def stop(self):
-        self._timer.stop()
-        self.hide()
-
-    def _tick(self):
-        self._phase += self.PHASE_STEP
-        self.update()
-
-    def _draw_paw(self, painter, cx, cy, scale, opacity):
-        color = QColor(self._color)
-        color.setAlphaF(max(0.0, min(1.0, opacity)))
-        painter.setBrush(QBrush(color))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(QPointF(cx, cy + 5 * scale), 9 * scale, 7 * scale)
-        for dx, dy in ((-8, -6), (-3, -10), (3, -10), (8, -6)):
-            painter.drawEllipse(
-                QPointF(cx + dx * scale, cy + dy * scale), 4 * scale, 5.5 * scale
-            )
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        spacing = self.width() / (self.PAW_COUNT + 1)
-        cy = self.height() / 2
-        for i in range(self.PAW_COUNT):
-            wave = (math.sin(self._phase - i * self.PHASE_OFFSET) + 1) / 2
-            self._draw_paw(
-                painter,
-                spacing * (i + 1),
-                cy,
-                scale=0.75 + 0.35 * wave,
-                opacity=0.25 + 0.75 * wave,
-            )
-
-
-# --------------------------------------------------------------------------
 # Konusma balonu
 # --------------------------------------------------------------------------
 
@@ -2809,10 +2718,6 @@ class ChatBubble(QWidget):
         self.response_area.setPlaceholderText("Bana ekraninda ne oldugunu sor...")
         layout.addWidget(self.response_area, 1)
 
-        self.paw_loading = PawLoadingIndicator(parent=container)
-        self.paw_loading.setFixedHeight(32)
-        layout.addWidget(self.paw_loading)
-
         self.quick_questions_box = QComboBox()
         self.quick_questions_box.addItem("Hazir sorular...")
         self.quick_questions_box.addItems(DEFAULT_QUICK_QUESTIONS)
@@ -2858,16 +2763,13 @@ class ChatBubble(QWidget):
     def show_thinking(self):
         self.ask_button.setEnabled(False)
         self.response_area.setPlainText("Dusunuyor...")
-        self.paw_loading.start()
 
     def show_response(self, text):
         self.ask_button.setEnabled(True)
-        self.paw_loading.stop()
         self.response_area.setPlainText(text)
 
     def show_error(self, text):
         self.ask_button.setEnabled(True)
-        self.paw_loading.stop()
         self.response_area.setPlainText(f"⚠ {text}")
 
 
@@ -3306,21 +3208,12 @@ class CatCharacter(QWidget):
 
         self.scale_factor = self.config.get("scale_percent") / 100.0
         self.pixmaps = {}
-        self.walk_frames = []
-        self._walk_frame_index = 0
-        self.walk_anim_timer = QTimer(self)
-        self.walk_anim_timer.timeout.connect(self._advance_walk_frame)
         self._load_pixmaps()
 
         self.state = "norm"
         self.current_pixmap = None
         self._dragging = False
         self._drag_offset = QPoint()
-        self._facing_left = True  # yuruyus gorselleri varsayilan olarak sola bakiyor
-        self._roam_animation = None
-        self.roam_timer = QTimer(self)
-        self.roam_timer.setSingleShot(True)
-        self.roam_timer.timeout.connect(self._roam_move)
         self.last_activity = time.monotonic()
         self.bubble = None
         self.worker = None
@@ -3333,7 +3226,6 @@ class CatCharacter(QWidget):
 
         self._position_window()
         self._set_state("norm")
-        self._schedule_roam()
 
         self.sleep_check_timer = QTimer(self)
         self.sleep_check_timer.timeout.connect(self._check_sleep)
@@ -3400,31 +3292,6 @@ class CatCharacter(QWidget):
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
-        self.walk_frames = self._load_walk_frames(skin_dir)
-
-    def _load_walk_frames(self, skin_dir):
-        """"norm" durumunda oynatilacak yuruyus kare dizisini yukler.
-        Dosyalar (fuff_walk_000.png, fuff_walk_001.png, ...) bulunamazsa
-        bos liste doner - bu durumda CatCharacter statik "norm" gorseline
-        geri duser, mevcut/eksik skin'leri bozmaz."""
-        frames = []
-        size = max(24, int(self.SPRITE_BASE_SIZE * self.scale_factor))
-        for i in range(WALK_FRAME_MAX_COUNT):
-            path = os.path.join(skin_dir, WALK_FRAME_PATTERN.format(i))
-            if not os.path.isfile(path):
-                break
-            raw = QPixmap(path)
-            if raw.isNull():
-                break
-            frames.append(
-                raw.scaled(
-                    size,
-                    size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-        return frames
 
     def _position_window(self):
         screen = QApplication.primaryScreen().availableGeometry()
@@ -3443,90 +3310,17 @@ class CatCharacter(QWidget):
         self.move(x, y)
 
     def _set_state(self, state):
-        was_norm = self.state == "norm"
         self.state = state
-        if state == "norm" and self.walk_frames:
-            self._walk_frame_index = 0
-            self.current_pixmap = self.walk_frames[0]
-            self.setFixedSize(self.current_pixmap.size())
-            if not self.walk_anim_timer.isActive():
-                self.walk_anim_timer.start(WALK_FRAME_INTERVAL_MS)
-            if not was_norm:
-                self._schedule_roam()
-        else:
-            self.walk_anim_timer.stop()
-            if self._roam_animation is not None:
-                self._roam_animation.stop()
-                self._roam_animation = None
-            self.roam_timer.stop()
-            pixmap = self.pixmaps.get(state, self.pixmaps["norm"])
-            self.current_pixmap = pixmap
-            self.setFixedSize(pixmap.size())
-        self.update()
-
-    def _advance_walk_frame(self):
-        if not self.walk_frames:
-            return
-        self._walk_frame_index = (self._walk_frame_index + 1) % len(self.walk_frames)
-        self.current_pixmap = self.walk_frames[self._walk_frame_index]
+        pixmap = self.pixmaps.get(state, self.pixmaps["norm"])
+        self.current_pixmap = pixmap
+        self.setFixedSize(pixmap.size())
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         if self.current_pixmap:
-            # Yuruyus gorselleri varsayilan olarak sola bakiyor; saga
-            # dogru dolasirken yatayda aynalanir.
-            if self.state == "norm" and not self._facing_left:
-                painter.translate(self.width(), 0)
-                painter.scale(-1, 1)
             painter.drawPixmap(0, 0, self.current_pixmap)
-
-    # -- dolasma (roaming) --------------------------------------------------
-
-    def _schedule_roam(self):
-        if not self.walk_frames:
-            return
-        delay = random.randint(ROAM_MIN_DELAY_MS, ROAM_MAX_DELAY_MS)
-        self.roam_timer.start(delay)
-
-    def _roam_move(self):
-        if self.state != "norm" or self._dragging:
-            self._schedule_roam()
-            return
-        if self.bubble is not None and self.bubble.isVisible():
-            self._schedule_roam()
-            return
-
-        screen = QApplication.primaryScreen().availableGeometry()
-        max_x = max(screen.left(), screen.right() - self.width())
-        max_y = max(screen.top(), screen.bottom() - self.height())
-        if max_x <= screen.left() or max_y <= screen.top():
-            self._schedule_roam()
-            return
-
-        target_x = random.randint(screen.left(), max_x)
-        target_y = random.randint(screen.top(), max_y)
-        self._facing_left = target_x <= self.x()
-
-        distance = ((target_x - self.x()) ** 2 + (target_y - self.y()) ** 2) ** 0.5
-        duration = int(
-            min(max(distance * ROAM_MS_PER_PIXEL, ROAM_MIN_DURATION_MS), ROAM_MAX_DURATION_MS)
-        )
-
-        self._roam_animation = QPropertyAnimation(self, b"pos")
-        self._roam_animation.setDuration(duration)
-        self._roam_animation.setStartValue(self.pos())
-        self._roam_animation.setEndValue(QPoint(target_x, target_y))
-        self._roam_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-        self._roam_animation.finished.connect(self._on_roam_finished)
-        self._roam_animation.start()
-
-    def _on_roam_finished(self):
-        self._roam_animation = None
-        self.config.set("pos_x", self.x())
-        self.config.set("pos_y", self.y())
-        self._schedule_roam()
 
     # -- uyku modu ----------------------------------------------------------
 
@@ -3550,10 +3344,6 @@ class CatCharacter(QWidget):
     def mousePressEvent(self, event):
         self._register_activity()
         if event.button() == Qt.MouseButton.LeftButton:
-            if self._roam_animation is not None:
-                self._roam_animation.stop()
-                self._roam_animation = None
-            self.roam_timer.stop()
             self._dragging = True
             self._drag_offset = event.globalPosition().toPoint() - self.pos()
         super().mousePressEvent(event)
@@ -3568,7 +3358,6 @@ class CatCharacter(QWidget):
             self._dragging = False
             self.config.set("pos_x", self.x())
             self.config.set("pos_y", self.y())
-            self._schedule_roam()
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):

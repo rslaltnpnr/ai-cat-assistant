@@ -13,7 +13,6 @@ import '../services/quick_questions.dart';
 import '../services/remote_control_service.dart';
 import '../services/settings_service.dart';
 import '../theme/app_colors.dart';
-import 'paw_loading_indicator.dart';
 
 /// Kediye dokununca acilan, metin ve/veya foto ile soru sorulabilen panel.
 /// Gecmis girisleri [HistoryService]'ten yuklenir; yeni sorular
@@ -478,12 +477,14 @@ class _ChatSheetState extends State<ChatSheet> {
                   ),
                   _busy
                       ? Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                          ),
-                          child: PawLoadingIndicator(
-                            color: colors.accent,
-                            size: 22,
+                          padding: const EdgeInsets.all(10),
+                          child: SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: colors.textSecondary,
+                            ),
                           ),
                         )
                       : IconButton(
