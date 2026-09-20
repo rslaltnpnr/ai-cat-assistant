@@ -49,6 +49,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -231,7 +232,7 @@ REMOTE_LIVE_SPECIAL_KEY_NAMES = frozenset(
     }
 )
 
-APP_VERSION = "1.8.3"
+APP_VERSION = "1.9.0"
 GITHUB_REPO = "rslaltnpnr/ai-cat-assistant"
 UPDATE_CHECK_TIMEOUT_SECONDS = 5
 UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 60
@@ -259,7 +260,10 @@ DEFAULT_CONFIG = {
     "auto_theme_enabled": False,
     "auto_theme_day_start": "07:00",
     "auto_theme_night_start": "19:00",
+    "onboarding_completed": False,
 }
+
+GEMINI_API_KEY_URL = "https://aistudio.google.com/apikey"
 
 # "Ayarlari Disa/Ice Aktar" ile paylasilabilen kisisellestirme ayarlari -
 # _export_backup/_import_backup'taki tam yedeklemenin aksine, gizli
@@ -387,12 +391,21 @@ class ConfigManager:
 
     def load(self):
         if os.path.exists(self.path):
+            loaded = {}
             try:
                 with open(self.path, "r", encoding="utf-8") as f:
-                    self.data.update(json.load(f))
+                    loaded = json.load(f)
+                self.data.update(loaded)
             except (json.JSONDecodeError, OSError):
                 pass
             self._migrate_deprecated_model()
+            if "onboarding_completed" not in loaded:
+                # Bu anahtar eklenmeden once kurulmus bir surum: ilk
+                # calistirma sihirbazini (bkz. OnboardingWizard) zaten
+                # isim/API key girmis mevcut bir kullaniciya gostermeye
+                # gerek yok - yeni kurulumdan ayirt etmek icin.
+                self.data["onboarding_completed"] = True
+                self.save()
         else:
             self.save()
         self._ensure_remote_pin()
@@ -3188,6 +3201,224 @@ class SecureNotepadDialog(QDialog):
 
 
 # --------------------------------------------------------------------------
+# Ilk calistirma sihirbazi
+# --------------------------------------------------------------------------
+
+class OnboardingWizard(QDialog):
+    """Yeni bir kurulumda CatCharacter ilk acildiginda gosterilen kisa,
+    adim adim kurulum sihirbazi. Isim/kisilik, Gemini API key ve Windows
+    ile baslatma gibi ayarlar daha once yalnizca sag tik menusunde
+    gomulu duruyordu; bu sihirbaz aynilarini ilk kurulumda one cikarir.
+    Sag tik menusundeki Sistem > "Kurulum Sihirbazini Yeniden Baslat" ile
+    de istendigi zaman tekrar acilabilir."""
+
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self.setWindowTitle("AI Kedi Asistanina Hos Geldiniz")
+        self.setModal(True)
+        self.resize(420, 360)
+        self.setStyleSheet(
+            """
+            QDialog { background-color: #202028; color: white; }
+            QLabel { color: white; }
+            QLineEdit, QComboBox {
+                background-color: rgba(255, 255, 255, 30);
+                border: 1px solid rgba(255, 255, 255, 80);
+                border-radius: 8px;
+                padding: 6px;
+                color: white;
+            }
+            QPushButton {
+                background-color: rgba(90, 170, 255, 220);
+                border: none;
+                border-radius: 8px;
+                padding: 6px 14px;
+                color: white;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: rgba(120, 190, 255, 230); }
+            QPushButton#linkButton {
+                background-color: transparent;
+                color: rgba(255, 255, 255, 160);
+                font-weight: normal;
+                text-decoration: underline;
+            }
+            QPushButton#linkButton:hover { color: white; }
+            """
+        )
+
+        outer = QVBoxLayout(self)
+
+        self.step_label = QLabel("")
+        self.step_label.setStyleSheet("color: rgba(255, 255, 255, 120); font-size: 11px;")
+        outer.addWidget(self.step_label)
+
+        self.stack = QStackedWidget()
+        outer.addWidget(self.stack, 1)
+
+        self.stack.addWidget(self._build_welcome_page())
+        self.stack.addWidget(self._build_identity_page())
+        self.stack.addWidget(self._build_api_key_page())
+        self.stack.addWidget(self._build_startup_page())
+        self.stack.addWidget(self._build_finish_page())
+
+        nav = QHBoxLayout()
+        self.skip_button = QPushButton("Daha Sonra")
+        self.skip_button.setObjectName("linkButton")
+        self.skip_button.clicked.connect(self._finish)
+        nav.addWidget(self.skip_button)
+        nav.addStretch()
+        self.back_button = QPushButton("Geri")
+        self.back_button.clicked.connect(self._go_back)
+        nav.addWidget(self.back_button)
+        self.next_button = QPushButton("Ileri")
+        self.next_button.clicked.connect(self._go_next)
+        nav.addWidget(self.next_button)
+        outer.addLayout(nav)
+
+        self.stack.currentChanged.connect(self._update_nav)
+        self._update_nav()
+
+    def _update_nav(self):
+        index = self.stack.currentIndex()
+        self.step_label.setText(f"Adim {index + 1}/{self.stack.count()}")
+        self.back_button.setEnabled(index > 0)
+        is_last = index == self.stack.count() - 1
+        self.next_button.setText("Basla" if is_last else "Ileri")
+        self.skip_button.setVisible(not is_last)
+
+    def _go_back(self):
+        self.stack.setCurrentIndex(max(0, self.stack.currentIndex() - 1))
+
+    def _go_next(self):
+        index = self.stack.currentIndex()
+        if index == self.stack.count() - 1:
+            self._finish()
+            return
+        self.stack.setCurrentIndex(index + 1)
+
+    def _finish(self):
+        name = self.name_input.text().strip()
+        if name:
+            self.config.set("character_name", name)
+        personality = self.personality_combo.currentText()
+        if personality:
+            self.config.set("personality", personality)
+        api_key = self.api_key_input.text().strip()
+        if api_key:
+            self.config.set("gemini_api_key", api_key)
+        set_autostart(self.autostart_checkbox.isChecked())
+        self.config.set("onboarding_completed", True)
+        self.accept()
+
+    def _build_welcome_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        title = QLabel("Merhaba!")
+        title.setStyleSheet("font-size: 18px; font-weight: bold;")
+        layout.addWidget(title)
+        info = QLabel(
+            "Masaustunde gezinen, Google Gemini destekli bir kedi "
+            "asistaniyim. Ekraninda dolasir, sorularini yanitlar ve "
+            "istedigin zaman sag tiklayarak ayarlarima ulasabilirsin.\n\n"
+            "Baslamadan once birkac kisa adimi birlikte tamamlayalim."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        layout.addStretch()
+        return page
+
+    def _build_identity_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        title = QLabel("Kimlik ve Kisilik")
+        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(title)
+
+        layout.addWidget(QLabel("Bana bir isim ver:"))
+        self.name_input = QLineEdit(self.config.get("character_name") or "Fuff")
+        layout.addWidget(self.name_input)
+
+        layout.addWidget(QLabel("Nasil bir kisilikle konusayim?"))
+        self.personality_combo = QComboBox()
+        self.personality_combo.addItems(list(PERSONALITY_PRESETS.keys()))
+        current_personality = self.config.get("personality")
+        if current_personality in PERSONALITY_PRESETS:
+            self.personality_combo.setCurrentText(current_personality)
+        layout.addWidget(self.personality_combo)
+
+        layout.addStretch()
+        return page
+
+    def _build_api_key_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        title = QLabel("Gemini API Key")
+        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(title)
+        info = QLabel(
+            "Sorularini yanitlayabilmem icin ucretsiz bir Google Gemini "
+            "API anahtarina ihtiyacim var. Asagidaki baglantidan birkac "
+            "saniyede alabilirsin; istersen bu adimi atlayip daha sonra "
+            "sag tik menusunden de girebilirsin."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        get_key_button = QPushButton("API Anahtari Al (tarayicida acilir)")
+        get_key_button.setObjectName("linkButton")
+        get_key_button.clicked.connect(lambda: webbrowser.open(GEMINI_API_KEY_URL))
+        layout.addWidget(get_key_button)
+
+        self.api_key_input = QLineEdit(self.config.get("gemini_api_key") or "")
+        self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_input.setPlaceholderText("API anahtarini buraya yapistir (opsiyonel)")
+        layout.addWidget(self.api_key_input)
+
+        layout.addStretch()
+        return page
+
+    def _build_startup_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        title = QLabel("Izinler ve Baslangic")
+        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(title)
+        info = QLabel(
+            "Ekran goruntusuyle ilgili sorularinda yardimci olabilmem "
+            "icin bazen ekranini yakalarim - bu yalnizca sen istedigin "
+            "an olur, arka planda gizlice calismam.\n\n"
+            "Bilgisayar acildiginda otomatik baslamami ister misin?"
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self.autostart_checkbox = QCheckBox("Windows ile Baslat")
+        self.autostart_checkbox.setChecked(is_autostart_enabled())
+        layout.addWidget(self.autostart_checkbox)
+
+        layout.addStretch()
+        return page
+
+    def _build_finish_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        title = QLabel("Hazirsin!")
+        title.setStyleSheet("font-size: 18px; font-weight: bold;")
+        layout.addWidget(title)
+        info = QLabel(
+            "Ayarlarini istedigin zaman sag tik menusundeki Gorunum, "
+            "Sohbet, Araclar, Yedekleme ve Sistem alt menulerinden "
+            "degistirebilirsin."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        layout.addStretch()
+        return page
+
+
+# --------------------------------------------------------------------------
 # Masaustu kedi karakteri
 # --------------------------------------------------------------------------
 
@@ -3278,6 +3509,7 @@ class CatCharacter(QWidget):
         self._last_update_info = None
         self._update_download_worker = None
         QTimer.singleShot(3000, lambda: self._check_for_updates(manual=False))
+        QTimer.singleShot(400, self._maybe_show_onboarding)
 
     # -- gorsel yukleme / olcekleme -------------------------------------
 
@@ -4546,6 +4778,12 @@ class CatCharacter(QWidget):
         update_action.triggered.connect(lambda: self._check_for_updates(manual=True))
         sistem_menu.addAction(update_action)
 
+        sistem_menu.addSeparator()
+
+        onboarding_action = QAction("Kurulum Sihirbazini Yeniden Baslat", self)
+        onboarding_action.triggered.connect(self._show_onboarding_wizard)
+        sistem_menu.addAction(onboarding_action)
+
         menu.addSeparator()
 
         about_action = QAction("Hakkinda", self)
@@ -4611,6 +4849,16 @@ class CatCharacter(QWidget):
         )
         if ok:
             self.config.set("gemini_api_key", key.strip())
+
+    # -- ilk calistirma sihirbazi ------------------------------------------
+
+    def _maybe_show_onboarding(self):
+        if not self.config.get("onboarding_completed"):
+            self._show_onboarding_wizard()
+
+    def _show_onboarding_wizard(self):
+        self._register_activity()
+        OnboardingWizard(self.config, self).exec()
 
 
 # --------------------------------------------------------------------------

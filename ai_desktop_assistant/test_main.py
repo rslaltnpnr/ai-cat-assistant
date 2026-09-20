@@ -860,6 +860,32 @@ class TestApplySettingsProfile:
         assert dest.get("theme_mode") == "light"
 
 
+class TestOnboardingCompleted:
+    """Ilk calistirma sihirbazinin (OnboardingWizard) hangi kurulumlarda
+    gosterilecegini belirleyen "onboarding_completed" bayraginin
+    ConfigManager.load() icindeki mantigi: yeni kurulumlar False ile
+    baslar, sihirbaz eklenmeden once var olan kurulumlar otomatik olarak
+    True'ya "buyukbabalanir" (grandfather) - eski kullaniciya sihirbaz
+    gosterilmez."""
+
+    def test_yeni_kurulumda_varsayilan_false(self, tmp_path):
+        config = ConfigManager(str(tmp_path / "config.json"))
+        assert config.get("onboarding_completed") is False
+
+    def test_sihirbazdan_once_var_olan_config_otomatik_tamamlanmis_sayilir(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text('{"character_name": "Pati"}', encoding="utf-8")
+        config = ConfigManager(str(path))
+        assert config.get("onboarding_completed") is True
+        assert config.get("character_name") == "Pati"
+
+    def test_zaten_tamamlanmis_olarak_kaydedilmis_config_korunur(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text('{"onboarding_completed": false}', encoding="utf-8")
+        config = ConfigManager(str(path))
+        assert config.get("onboarding_completed") is False
+
+
 class TestSecureNotepadService:
     """Dusuk bir PBKDF2 iterasyon sayisiyla calisir - varsayilan 200k
     iterasyon test suitini gereksiz yavaslatir, ayni kod yolunu daha
