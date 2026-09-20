@@ -40,6 +40,7 @@ class SettingsService {
   static const _keyLanguageCode = 'language_code';
   static const _keyScreenWatchOverlayEnabled = 'screen_watch_overlay_enabled';
   static const _keyLastSeenCrash = 'last_seen_crash';
+  static const _keyOnboardingCompleted = 'onboarding_completed';
 
   final SharedPreferences _prefs;
 
@@ -232,4 +233,22 @@ class SettingsService {
       _prefs.getBool(_keyScreenWatchOverlayEnabled) ?? false;
   set screenWatchOverlayEnabled(bool value) =>
       _prefs.setBool(_keyScreenWatchOverlayEnabled, value);
+
+  /// Ilk calistirma sihirbazinin (bkz. OnboardingWizard) daha once
+  /// tamamlanip tamamlanmadigi. Bu anahtar hic yazilmamissa (ya bu ozellik
+  /// eklenmeden once kurulmus eski bir surum, ya da gercekten yeni bir
+  /// kurulum), [_looksLikeExistingInstall] ile ayirt edilir: cekirdek
+  /// ayarlardan biri zaten kaydedilmisse eski bir kurulumdur ve sihirbaz
+  /// gosterilmez - masaustu suruumundeki ConfigManager.load() ile ayni
+  /// "buyukbabalama" fikri.
+  bool get onboardingCompleted =>
+      _prefs.getBool(_keyOnboardingCompleted) ?? _looksLikeExistingInstall();
+  set onboardingCompleted(bool value) =>
+      _prefs.setBool(_keyOnboardingCompleted, value);
+
+  bool _looksLikeExistingInstall() =>
+      _prefs.containsKey(_keyApiKey) ||
+      _prefs.containsKey(_keyCharacterName) ||
+      _prefs.containsKey(_keyThemeMode) ||
+      _prefs.containsKey(_keyRemoteProfiles);
 }
