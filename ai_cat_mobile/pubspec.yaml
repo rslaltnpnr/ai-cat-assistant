@@ -1,7 +1,7 @@
 name: ai_cat_mobile
 description: "AI Kedi Asistani - Gemini destekli, uygulama ekraninda gezinen mobil kedi asistani."
 publish_to: 'none'
-version: 1.7.0+22
+version: 1.7.1+23
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
