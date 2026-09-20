@@ -231,7 +231,7 @@ REMOTE_LIVE_SPECIAL_KEY_NAMES = frozenset(
     }
 )
 
-APP_VERSION = "1.8.2"
+APP_VERSION = "1.8.3"
 GITHUB_REPO = "rslaltnpnr/ai-cat-assistant"
 UPDATE_CHECK_TIMEOUT_SECONDS = 5
 UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 60
@@ -4346,6 +4346,9 @@ class CatCharacter(QWidget):
     # -- sag tik menusu -----------------------------------------------------
 
     def contextMenuEvent(self, event):
+        # Menu duz bir liste yerine mantiksal alt menulere ayrilir (Gorunum /
+        # Sohbet / Araclar / Yedekleme / Sistem) - ayni eylemler, sadece
+        # gruplu. Eskiden ~30 madde tek seviyede duruyordu.
         self._register_activity()
         menu = QMenu(self)
         menu.setStyleSheet(
@@ -4356,7 +4359,10 @@ class CatCharacter(QWidget):
             """
         )
 
-        size_menu = menu.addMenu("Boyut Degistir")
+        # --- Gorunum ---
+        gorunum_menu = menu.addMenu("Gorunum")
+
+        size_menu = gorunum_menu.addMenu("Boyut Degistir")
         size_group = QActionGroup(self)
         size_group.setExclusive(True)
         for percent in (50, 75, 100, 150):
@@ -4369,7 +4375,7 @@ class CatCharacter(QWidget):
 
         skins = discover_skins()
         if len(skins) > 1:
-            skin_menu = menu.addMenu("Kedi Skin'i")
+            skin_menu = gorunum_menu.addMenu("Kedi Skin'i")
             skin_group = QActionGroup(self)
             skin_group.setExclusive(True)
             current_skin = self.config.get("skin")
@@ -4381,7 +4387,7 @@ class CatCharacter(QWidget):
                 skin_group.addAction(action)
                 skin_menu.addAction(action)
 
-        personality_menu = menu.addMenu("Kisilik")
+        personality_menu = gorunum_menu.addMenu("Kisilik")
         personality_group = QActionGroup(self)
         personality_group.setExclusive(True)
         current_personality = self.config.get("personality")
@@ -4395,58 +4401,89 @@ class CatCharacter(QWidget):
             personality_group.addAction(action)
             personality_menu.addAction(action)
 
+        gorunum_menu.addSeparator()
+
+        light_theme_action = QAction("Acik Tema", self)
+        light_theme_action.setCheckable(True)
+        light_theme_action.setChecked(self.config.get("theme_mode") == "light")
+        light_theme_action.toggled.connect(self._toggle_theme)
+        gorunum_menu.addAction(light_theme_action)
+
+        auto_theme_action = QAction("Otomatik Gece/Gunduz Temasi", self)
+        auto_theme_action.setCheckable(True)
+        auto_theme_action.setChecked(bool(self.config.get("auto_theme_enabled")))
+        auto_theme_action.toggled.connect(self._toggle_auto_theme)
+        gorunum_menu.addAction(auto_theme_action)
+
+        # --- Sohbet ---
+        sohbet_menu = menu.addMenu("Sohbet")
+
         rename_action = QAction("Kediye Isim Ver", self)
         rename_action.triggered.connect(self._rename_character)
-        menu.addAction(rename_action)
+        sohbet_menu.addAction(rename_action)
 
         history_action = QAction("Sohbet Gecmisi", self)
         history_action.triggered.connect(self._open_history)
-        menu.addAction(history_action)
+        sohbet_menu.addAction(history_action)
+
+        context_aware_action = QAction("Onceki Sohbeti Hatirla (Baglam)", self)
+        context_aware_action.setCheckable(True)
+        context_aware_action.setChecked(self.config.get("context_aware_enabled"))
+        context_aware_action.toggled.connect(self._toggle_context_aware)
+        sohbet_menu.addAction(context_aware_action)
+
+        sohbet_menu.addSeparator()
 
         api_key_action = QAction("Gemini API Key Ayarlari", self)
         api_key_action.triggered.connect(self._set_api_key)
-        menu.addAction(api_key_action)
+        sohbet_menu.addAction(api_key_action)
+
+        # --- Araclar ---
+        araclar_menu = menu.addMenu("Araclar")
 
         remote_action = QAction("Uzaktan Kumanda Bilgisi", self)
         remote_action.triggered.connect(self._show_remote_info)
-        menu.addAction(remote_action)
+        araclar_menu.addAction(remote_action)
 
         access_log_action = QAction("Erisim Gunlugu", self)
         access_log_action.triggered.connect(self._show_access_log)
-        menu.addAction(access_log_action)
+        araclar_menu.addAction(access_log_action)
 
         notification_history_action = QAction("Bildirim Gecmisi", self)
         notification_history_action.triggered.connect(self._show_notification_history)
-        menu.addAction(notification_history_action)
+        araclar_menu.addAction(notification_history_action)
 
         screenshot_history_action = QAction("Ekran Goruntusu Gecmisi", self)
         screenshot_history_action.triggered.connect(self._show_screenshot_history)
-        menu.addAction(screenshot_history_action)
+        araclar_menu.addAction(screenshot_history_action)
 
         usage_stats_action = QAction("Kullanım İstatistikleri", self)
         usage_stats_action.triggered.connect(self._show_usage_stats)
-        menu.addAction(usage_stats_action)
+        araclar_menu.addAction(usage_stats_action)
 
         secure_notepad_action = QAction("Şifreli Not Defteri", self)
         secure_notepad_action.triggered.connect(self._show_secure_notepad)
-        menu.addAction(secure_notepad_action)
+        araclar_menu.addAction(secure_notepad_action)
 
+        araclar_menu.addSeparator()
 
         reminder_action = QAction("Hatirlatici Kur", self)
         reminder_action.triggered.connect(self._create_reminder)
-        menu.addAction(reminder_action)
+        araclar_menu.addAction(reminder_action)
 
         if self._repeating_reminder_timers:
             stop_reminders_action = QAction("Tekrarlayan Hatirlaticilari Durdur", self)
             stop_reminders_action.triggered.connect(self._stop_repeating_reminders)
-            menu.addAction(stop_reminders_action)
+            araclar_menu.addAction(stop_reminders_action)
 
         automation_action = QAction("Otomasyon Kurallari...", self)
         automation_action.triggered.connect(self._show_automation_rules)
-        menu.addAction(automation_action)
+        araclar_menu.addAction(automation_action)
+
+        araclar_menu.addSeparator()
 
         custom_commands = self._custom_commands()
-        custom_menu = menu.addMenu("Özel Komutlar")
+        custom_menu = araclar_menu.addMenu("Özel Komutlar")
         if not custom_commands:
             empty_action = QAction("(henüz komut yok)", self)
             empty_action.setEnabled(False)
@@ -4467,57 +4504,47 @@ class CatCharacter(QWidget):
             delete_command_action.triggered.connect(self._delete_custom_command)
             custom_menu.addAction(delete_command_action)
 
-        autostart_action = QAction("Windows ile Baslat", self)
-        autostart_action.setCheckable(True)
-        autostart_action.setChecked(is_autostart_enabled())
-        autostart_action.toggled.connect(self._toggle_autostart)
-        menu.addAction(autostart_action)
-
-        light_theme_action = QAction("Acik Tema", self)
-        light_theme_action.setCheckable(True)
-        light_theme_action.setChecked(self.config.get("theme_mode") == "light")
-        light_theme_action.toggled.connect(self._toggle_theme)
-        menu.addAction(light_theme_action)
-
-        auto_theme_action = QAction("Otomatik Gece/Gunduz Temasi", self)
-        auto_theme_action.setCheckable(True)
-        auto_theme_action.setChecked(bool(self.config.get("auto_theme_enabled")))
-        auto_theme_action.toggled.connect(self._toggle_auto_theme)
-        menu.addAction(auto_theme_action)
-
-        update_action = QAction("Guncellemeleri Kontrol Et", self)
-        update_action.triggered.connect(lambda: self._check_for_updates(manual=True))
-        menu.addAction(update_action)
-
-        menu.addSeparator()
+        # --- Yedekleme ---
+        yedekleme_menu = menu.addMenu("Yedekleme")
 
         backup_action = QAction("Yedek Al...", self)
         backup_action.triggered.connect(self._export_backup)
-        menu.addAction(backup_action)
+        yedekleme_menu.addAction(backup_action)
 
         restore_action = QAction("Yedekten Geri Yukle...", self)
         restore_action.triggered.connect(self._import_backup)
-        menu.addAction(restore_action)
+        yedekleme_menu.addAction(restore_action)
+
+        yedekleme_menu.addSeparator()
 
         export_profile_action = QAction("Ayarlari Disa Aktar...", self)
         export_profile_action.triggered.connect(self._export_settings_profile)
-        menu.addAction(export_profile_action)
+        yedekleme_menu.addAction(export_profile_action)
 
         import_profile_action = QAction("Ayarlari Ice Aktar...", self)
         import_profile_action.triggered.connect(self._import_settings_profile)
-        menu.addAction(import_profile_action)
+        yedekleme_menu.addAction(import_profile_action)
+
+        yedekleme_menu.addSeparator()
 
         auto_backup_action = QAction("Otomatik Yedekleme (Gunluk)", self)
         auto_backup_action.setCheckable(True)
         auto_backup_action.setChecked(self.config.get("auto_backup_enabled"))
         auto_backup_action.toggled.connect(self._toggle_auto_backup)
-        menu.addAction(auto_backup_action)
+        yedekleme_menu.addAction(auto_backup_action)
 
-        context_aware_action = QAction("Onceki Sohbeti Hatirla (Baglam)", self)
-        context_aware_action.setCheckable(True)
-        context_aware_action.setChecked(self.config.get("context_aware_enabled"))
-        context_aware_action.toggled.connect(self._toggle_context_aware)
-        menu.addAction(context_aware_action)
+        # --- Sistem ---
+        sistem_menu = menu.addMenu("Sistem")
+
+        autostart_action = QAction("Windows ile Baslat", self)
+        autostart_action.setCheckable(True)
+        autostart_action.setChecked(is_autostart_enabled())
+        autostart_action.toggled.connect(self._toggle_autostart)
+        sistem_menu.addAction(autostart_action)
+
+        update_action = QAction("Guncellemeleri Kontrol Et", self)
+        update_action.triggered.connect(lambda: self._check_for_updates(manual=True))
+        sistem_menu.addAction(update_action)
 
         menu.addSeparator()
 
