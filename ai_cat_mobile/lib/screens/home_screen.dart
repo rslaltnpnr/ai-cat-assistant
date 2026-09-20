@@ -24,6 +24,7 @@ import '../theme/app_colors.dart';
 import '../widgets/cat_sprite.dart';
 import '../widgets/chat_sheet.dart';
 import '../widgets/notification_history_sheet.dart';
+import '../widgets/onboarding_wizard.dart';
 import '../widgets/reminder_dialog.dart';
 import '../widgets/remote_control_sheet.dart';
 import '../widgets/roaming_cat.dart';
@@ -32,6 +33,13 @@ import '../widgets/settings_dialog.dart';
 import '../widgets/usage_stats_sheet.dart';
 
 class HomeScreen extends StatefulWidget {
+  /// Widget testlerinde varsayilan olarak kapatilir (bkz.
+  /// test/flutter_test_config.dart) - acik kalsaydi, bos SharedPreferences
+  /// ile pompalanan her tam-uygulama testinde OnboardingWizard modali
+  /// beklenmedik sekilde ekrani kaplayip diger etkilesimleri engellerdi.
+  /// Gercek calismada her zaman true'dur.
+  static bool onboardingCheckEnabled = true;
+
   final ValueChanged<ThemeMode> onThemeModeChanged;
   final ValueChanged<String> onLanguageCodeChanged;
 
@@ -114,6 +122,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final settingsForBackup = _settings;
     if (settingsForBackup != null) {
       BackupService().maybeAutoBackup(settingsForBackup);
+      _maybeShowOnboarding(settingsForBackup);
       _maybeShowCrashNotice(settingsForBackup);
     }
     final pendingUrl = _pendingSharedUrl;
@@ -137,6 +146,27 @@ class _HomeScreenState extends State<HomeScreen> {
         if (mounted) _handleWidgetAction(pendingWidgetAction);
       });
     }
+  }
+
+  /// Yalnizca gercekten yeni bir kurulumda (bkz.
+  /// SettingsService.onboardingCompleted) ilk calistirma sihirbazini
+  /// (OnboardingWizard) gosterir - masaustu suruumundeki
+  /// CatCharacter._maybe_show_onboarding ile ayni fikir.
+  void _maybeShowOnboarding(SettingsService settings) {
+    if (!HomeScreen.onboardingCheckEnabled) return;
+    if (settings.onboardingCompleted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _showOnboardingWizard(settings);
+    });
+  }
+
+  void _showOnboardingWizard(SettingsService settings) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => OnboardingWizard(settings: settings),
+    ).then((_) => setState(() {})); // isim degismis olabilir, baslik guncellensin
   }
 
   /// Masaustu suruumunun crash.log'una benzer sekilde: gecen seferki bir
@@ -519,9 +549,12 @@ class _HomeScreenState extends State<HomeScreen> {
         onThemeModeChanged: widget.onThemeModeChanged,
         onLanguageCodeChanged: widget.onLanguageCodeChanged,
       ),
-    ).then(
-      (_) => setState(() {}),
-    ); // isim degismis olabilir, baslik guncellensin
+    ).then((result) {
+      setState(() {}); // isim degismis olabilir, baslik guncellensin
+      if (result == 'restart_onboarding') {
+        _showOnboardingWizard(settings);
+      }
+    });
   }
 
   void _openRemoteControl({String? initialUrl}) {

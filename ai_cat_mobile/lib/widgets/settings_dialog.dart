@@ -570,6 +570,14 @@ class _SettingsDialogState extends State<SettingsDialog> {
       ),
       actions: [
         TextButton(
+          // HomeScreen._openSettings() bu ozel sonucu görüp sihirbazi
+          // acar - dogrudan burada acmak, bu pencereyi kapatan
+          // Navigator.pop() ile ayni anda calisirsa context gecersiz
+          // kalabilir, bu yuzden karari cagirana birakiyoruz.
+          onPressed: () => Navigator.of(context).pop('restart_onboarding'),
+          child: const Text('Kurulum Sihirbazı'),
+        ),
+        TextButton(
           onPressed: () => showDialog(
             context: context,
             builder: (_) => const AboutAppDialog(),
