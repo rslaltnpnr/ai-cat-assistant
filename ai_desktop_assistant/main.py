@@ -22,6 +22,7 @@ import itertools
 import json
 import os
 import random
+import shutil
 import socket
 import socketserver
 import ssl
@@ -247,7 +248,7 @@ REMOTE_LIVE_SPECIAL_KEY_NAMES = frozenset(
     }
 )
 
-APP_VERSION = "1.11.0"
+APP_VERSION = "1.12.0"
 GITHUB_REPO = "rslaltnpnr/ai-cat-assistant"
 UPDATE_CHECK_TIMEOUT_SECONDS = 5
 UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 60
@@ -2619,8 +2620,162 @@ def build_persona_prompt(character_name, personality):
         "onun ekranini gorebilen sevimli bir kedi yapay zeka asistanisin. "
         "Kendini her zaman bu isimle tanit; Google tarafindan gelistirilmis "
         "bir dil modeli oldugunu veya hangi sirkete/modele ait oldugunu "
-        f"asla soyleme. {tone}"
+        f"asla soyleme. {tone} Kullanicinin bilgisayarinda gercek islemler "
+        "yapabilecegin araclarin var: guncel/internet bilgisi gereken "
+        "sorularda arama araciyla arastir, kullanici senden kod/metin "
+        "yazmani isterse write_file araciyla belirttigi (ya da makul bir) "
+        "dosya yoluna yaz (yazdigin kodu ASLA kendin calistirmiyorsun), "
+        "kullanici bir uygulama acmani isterse open_application araciyla "
+        "ismiyle ac. Bu araclari sadece kullanici acikca boyle bir sey "
+        "istediginde kullan."
     )
+
+
+# --------------------------------------------------------------------------
+# Ajan araclari: Gemini'nin "function calling" ile cagirabildigi, yerel
+# bilgisayarda calisan iki arac. Kullanicinin acik tercihine gore kapsamlari
+# bilinçli olarak sinirli: write_file HICBIR ZAMAN yazdigi dosyayi calistirmaz
+# (calistirmak kullaniciya kalir), open_application ise yalnizca zaten
+# yuklu bir programi ismiyle baslatir - Gemini'ye rastgele kabuk
+# komutu/kod calistirma yetkisi verilmez.
+# --------------------------------------------------------------------------
+
+MAX_TOOL_CALL_ROUNDS = 5
+
+
+def _tool_write_file(path, content):
+    """path'e content'i yazar (ust klasorler yoksa olusturulur, dosya
+    varsa icerigi degistirilir). Sadece yazar - hicbir sekilde calistirmaz."""
+    try:
+        target = os.path.expanduser(os.path.expandvars(path))
+        parent = os.path.dirname(target)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(content)
+        return {"ok": True, "path": target, "bytes_written": len(content.encode("utf-8"))}
+    except OSError as exc:
+        return {"ok": False, "path": path, "error": str(exc)}
+
+
+def _tool_open_application(name):
+    """Verilen isimdeki uygulamayi acmayi dener. Once PATH'te ayni isimde
+    calistirilabilir bir dosya arar (shutil.which); bulunamazsa Windows'ta
+    os.startfile'a birakilir - bu, kabuk (shell) YORUMLAMASI OLMADAN
+    dogrudan Windows'un ShellExecute API'sini cagirir (bir shell komut
+    satirina string birlestirerek gonderilmez), Calistir penceresine isim
+    yazmakla ayni sekilde "App Paths" kaydini da cozer. Boylece `name`
+    (Gemini'nin urettigi, dolayisiyla guvenilmeyen bir deger) hicbir zaman
+    bir kabuk tarafindan ayristirilmaz - kabuk meta-karakteri enjeksiyonu
+    (`;`, `&`, `|` vb.) riski yoktur."""
+    resolved = shutil.which(name)
+    try:
+        if resolved:
+            subprocess.Popen([resolved])
+            return {"ok": True, "resolved": resolved}
+        if sys.platform == "win32":
+            os.startfile(name)
+            return {"ok": True, "resolved": name}
+        subprocess.Popen([name])
+        return {"ok": True, "resolved": name}
+    except OSError as exc:
+        return {"ok": False, "name": name, "error": str(exc)}
+
+
+AGENT_TOOL_DISPATCH = {
+    "write_file": lambda args: _tool_write_file(args.get("path", ""), args.get("content", "")),
+    "open_application": lambda args: _tool_open_application(args.get("name", "")),
+}
+
+
+def _agent_tool_summary(name, args, result):
+    """Bildirim/olay gunlugune yazilacak kisa, insan-okunabilir ozet."""
+    if name == "write_file":
+        path = result.get("path") or args.get("path", "")
+        if result.get("ok"):
+            return f'"{path}" dosyasina yazildi ({result.get("bytes_written", 0)} bayt).'
+        return f'"{path}" dosyasina yazilamadi: {result.get("error")}'
+    if name == "open_application":
+        target = args.get("name", "")
+        if result.get("ok"):
+            return f'"{target}" acildi.'
+        return f'"{target}" acilamadi: {result.get("error")}'
+    if not result.get("ok", True):
+        return f"{name} basarisiz: {result.get('error')}"
+    return f"{name} calistirildi."
+
+
+def _build_agent_tools():
+    """GeminiWorker'in gonderdigi tools listesini olusturur: Gemini'nin
+    kendi Google Arama (grounding) araci + yukaridaki iki yerel fonksiyon.
+    Ayri Tool nesneleri olarak gonderilir (bkz. GeminiWorker._generate_stream_with_retry
+    cagrisindaki fallback - bazi model/API surumleri google_search'u ozel
+    function_declarations ile ayni istekte kabul etmeyebilir)."""
+    from google.genai import types
+
+    return [
+        types.Tool(google_search=types.GoogleSearch()),
+        types.Tool(
+            function_declarations=[
+                types.FunctionDeclaration(
+                    name="write_file",
+                    description=(
+                        "Kullanicinin bilgisayarinda bir dosyaya metin veya "
+                        "kod yazar (dosya yoksa olusturur, varsa icerigini "
+                        "degistirir). Yazdigi dosyayi ASLA calistirmaz."
+                    ),
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "path": types.Schema(
+                                type=types.Type.STRING,
+                                description="Yazilacak dosyanin yolu (goreli veya tam)",
+                            ),
+                            "content": types.Schema(
+                                type=types.Type.STRING,
+                                description="Dosyaya yazilacak tam icerik",
+                            ),
+                        },
+                        required=["path", "content"],
+                    ),
+                ),
+                types.FunctionDeclaration(
+                    name="open_application",
+                    description=(
+                        "Kullanicinin bilgisayarinda zaten yuklu bir "
+                        "uygulamayi ismiyle acar (orn. 'chrome', 'not "
+                        "defteri', 'hesap makinesi')."
+                    ),
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "name": types.Schema(
+                                type=types.Type.STRING,
+                                description="Acilacak uygulamanin adi",
+                            ),
+                        },
+                        required=["name"],
+                    ),
+                ),
+            ]
+        ),
+    ]
+
+
+def _is_tool_combination_error(exc):
+    """Bazi Gemini model/API surumleri google_search grounding'i ozel
+    function_declarations ile ayni istekte reddedebilir - bu hata sadece bu
+    kombinasyona ozgu gorunuyorsa True doner, boylece cagiran taraf aramayi
+    devre disi birakip sadece yerel araclarla tekrar deneyebilir."""
+    text = str(exc).lower()
+    mentions_tool = "tool" in text or "function" in text or "google_search" in text
+    mentions_incompatible = (
+        "not supported" in text
+        or "cannot be combined" in text
+        or "invalid_argument" in text
+        or "at most one tool" in text
+    )
+    return mentions_tool and mentions_incompatible
 
 
 # --------------------------------------------------------------------------
@@ -2635,6 +2790,9 @@ class GeminiWorker(QThread):
     # finished_ok yine de TAM (birikmis, stripped) metni tasir; ChatHistory
     # kaydi ve son goruntu her zaman finished_ok'a dayanir.
     chunk_received = pyqtSignal(str)
+    # Bir ajan araci (write_file/open_application) her calistiginda
+    # (arac_adi, insan-okunabilir ozet) yayinlar - bkz. AGENT_TOOL_DISPATCH.
+    tool_used = pyqtSignal(str, str)
 
     def __init__(
         self,
@@ -2708,44 +2866,121 @@ class GeminiWorker(QThread):
                 ],
             )
         )
-        gen_config = types.GenerateContentConfig(system_instruction=persona)
+        # tools_include_search: bazi model/API surumleri Google Arama
+        # (grounding) aracini ozel function_declarations ile ayni istekte
+        # kabul etmeyebilir (bkz. _is_tool_combination_error) - boyle bir
+        # hata alinirsa arama devre disi birakilip sadece yerel araclarla
+        # (dosya yazma/uygulama acma) devam edilir. Karar ilk istekte bir
+        # kez verilir, sonraki tum turlarda aynen korunur.
+        tools_include_search = True
+
+        def make_gen_config():
+            tools = _build_agent_tools()
+            if not tools_include_search:
+                tools = [t for t in tools if t.google_search is None]
+            return types.GenerateContentConfig(system_instruction=persona, tools=tools)
+
+        gen_config = make_gen_config()
 
         try:
             client = genai.Client(api_key=self.api_key)
+            active_model = self.model_name
+
+            def start_stream(model_name, current_contents, retry_delays=OVERLOAD_RETRY_DELAYS):
+                nonlocal gen_config, tools_include_search
+                try:
+                    return self._generate_stream_with_retry(
+                        client, model_name, current_contents, gen_config, retry_delays
+                    )
+                except Exception as exc:
+                    if tools_include_search and _is_tool_combination_error(exc):
+                        tools_include_search = False
+                        gen_config = make_gen_config()
+                        return self._generate_stream_with_retry(
+                            client, model_name, current_contents, gen_config, retry_delays
+                        )
+                    raise
+
             try:
-                stream = self._generate_stream_with_retry(client, self.model_name, contents, gen_config)
+                stream = start_stream(active_model, contents)
             except Exception as primary_exc:
-                should_try_fallback = self.model_name != FALLBACK_MODEL and (
+                should_try_fallback = active_model != FALLBACK_MODEL and (
                     self._is_overload_error(primary_exc) or self._is_model_retired_error(primary_exc)
                 )
                 if should_try_fallback:
                     try:
-                        stream = self._generate_stream_with_retry(
-                            client, FALLBACK_MODEL, contents, gen_config, retry_delays=(2,)
-                        )
+                        active_model = FALLBACK_MODEL
+                        stream = start_stream(active_model, contents, retry_delays=(2,))
                     except Exception:
                         raise primary_exc
                 else:
                     raise
 
-            accumulated = ""
-            try:
-                for chunk in stream:
-                    piece = chunk.text or ""
-                    if not piece:
-                        continue
-                    accumulated += piece
-                    self.chunk_received.emit(piece)
-            except Exception as exc:
-                # Ilk parcalar zaten ekranda gosterilmis olabilir - baska bir
-                # modelle bastan denemek kullaniciya yarim kalmis + tekrarlanan
-                # bir metin gosterirdi, bu yuzden akis ortasindaki bir hata
-                # (retry/fallback yerine) dogrudan hata olarak bildirilir.
-                self.finished_error.emit(f"Gemini API hatasi (yanit yarida kesildi): {exc}")
-                return
+            accumulated_text = ""
+            round_count = 0
+            while True:
+                round_count += 1
+                round_parts = []
+                function_calls = []
+                try:
+                    for chunk in stream:
+                        calls = chunk.function_calls
+                        if calls:
+                            function_calls.extend(calls)
+                            round_parts.extend(chunk.parts or [])
+                            continue
+                        piece = chunk.text or ""
+                        if not piece:
+                            continue
+                        round_parts.extend(chunk.parts or [])
+                        accumulated_text += piece
+                        self.chunk_received.emit(piece)
+                except Exception as exc:
+                    # Ilk parcalar zaten ekranda gosterilmis olabilir - baska
+                    # bir modelle bastan denemek kullaniciya yarim kalmis +
+                    # tekrarlanan bir metin gosterirdi, bu yuzden akis
+                    # ortasindaki bir hata (retry/fallback yerine) dogrudan
+                    # hata olarak bildirilir.
+                    self.finished_error.emit(f"Gemini API hatasi (yanit yarida kesildi): {exc}")
+                    return
 
-            text = accumulated.strip() or "(Bos yanit dondu)"
-            self.finished_ok.emit(text)
+                if not function_calls:
+                    text = accumulated_text.strip() or "(Bos yanit dondu)"
+                    self.finished_ok.emit(text)
+                    return
+
+                # Bir veya daha fazla arac cagrisi geldi: her birini yerelde
+                # calistir, sonucu modele "function_response" olarak bildir
+                # ve dogal dilde bir devam yaniti icin akisi yeniden baslat.
+                response_parts = []
+                for call in function_calls:
+                    handler = AGENT_TOOL_DISPATCH.get(call.name)
+                    args = call.args or {}
+                    result = (
+                        handler(args)
+                        if handler is not None
+                        else {"ok": False, "error": f"Bilinmeyen arac: {call.name}"}
+                    )
+                    self.tool_used.emit(call.name, _agent_tool_summary(call.name, args, result))
+                    response_parts.append(
+                        types.Part.from_function_response(name=call.name, response=result)
+                    )
+
+                contents.append(types.Content(role="model", parts=round_parts))
+                contents.append(types.Content(role="user", parts=response_parts))
+
+                if round_count >= MAX_TOOL_CALL_ROUNDS:
+                    # Sinir asildi - bir sonraki turun akisini hic cekmeden
+                    # (bosa bir istek atmamak icin) burada durulur.
+                    text = accumulated_text.strip() or "(Cok fazla ardisik arac cagrisi yapildi)"
+                    self.finished_ok.emit(text)
+                    return
+
+                try:
+                    stream = start_stream(active_model, contents)
+                except Exception as exc:
+                    self.finished_error.emit(f"Gemini API hatasi (arac sonrasi): {exc}")
+                    return
         except Exception as exc:
             self.finished_error.emit(f"Gemini API hatasi: {exc}")
 
@@ -3792,9 +4027,17 @@ class CatCharacter(QWidget):
         )
         if self.bubble:
             self.worker.chunk_received.connect(self.bubble.append_chunk)
+        self.worker.tool_used.connect(self._on_tool_used)
         self.worker.finished_ok.connect(self._on_answer)
         self.worker.finished_error.connect(self._on_answer_error)
         self.worker.start()
+
+    def _on_tool_used(self, tool_name, summary):
+        """GeminiWorker bir ajan aracini (write_file/open_application)
+        calistirdiginda seffaflik icin Bildirim Gecmisi'ne kaydeder -
+        cagri worker thread'inden gelir, burada (ana thread'de) sadece
+        dosya G/C yapan NotificationLog.add cagrilir."""
+        self.notifications.add(f"Kedi bir arac calistirdi: {tool_name}", summary)
 
     def _recent_context(self):
         return select_context_turns(
