@@ -127,6 +127,20 @@ karakteri (PyQt6).
   yorumlayiciya asla string birlestirilerek gonderilmez (kabuk
   enjeksiyonu riski yok). Her arac cagrisi, seffaflik icin "Bildirim
   Gecmisi"ne kaydedilir.
+- **Sesli sohbet**: konusma balonundaki mikrofon (🎤) dugmesine basip
+  soruyu sesle sorabilirsiniz - konusma bitince (sessizlik algilaninca,
+  ayri bir "durdur" dugmesi gerekmez) soru otomatik metne cevrilip
+  sorulur; sesle sorulan bir sorunun cevabi da otomatik olarak sesle
+  okunur (varsa Turkce bir Windows sesi secilir). Yazarak sorulan
+  sorularda cevap her zaman oldugu gibi sadece yazili kalir - sesli
+  yanit sadece sesle soruldugunda devreye girer. Bu, daha once
+  kaldirilan "Sesli Ajan" (bkz. gecmis surumler) ile karistirilmamali:
+  orada kedi sesli komutla ekrani izleyip kendi kendine adim atiyordu -
+  burada oyle bir otonomluk YOK, sadece normal sohbetin giris/cikisina
+  ses eklendi. Mikrofon/hoparlor kutuphaneleri (SpeechRecognition,
+  pyttsx3, PyAudio) kurulu degilse ya da bir ses aygiti bulunamazsa
+  ozellik sessizce kullanilamaz hale gelir, uygulamanin geri kalani
+  etkilenmez.
 - **Guvenilirlik**: beklenmeyen bir hata olursa traceback `crash.log`'a
   yazilir ve uygulama kendini otomatik olarak yeniden baslatir (cok kisa
   arayla ust uste cokerse - baslangic hatasi dongusu - tekrar baslatmaz,
