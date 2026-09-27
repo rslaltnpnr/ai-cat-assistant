@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:ai_cat_mobile/services/backup_service.dart';
+import 'package:ai_cat_mobile/services/settings_service.dart';
 
 void main() {
   group('BackupService.importBackup', () {
@@ -26,7 +27,11 @@ void main() {
 
       expect(count, 5);
       expect(prefs.getString('character_name'), 'Fuff');
-      expect(prefs.getString('gemini_api_key'), 'test-key');
+      // API anahtari SharedPreferences'a duz metin YAZILMAZ - dogrudan
+      // guvenli depoya tasinir (bkz. SettingsService.migrateLegacyApiKey).
+      expect(prefs.containsKey('gemini_api_key'), isFalse);
+      final settings = await SettingsService.create(prefs);
+      expect(settings.apiKey, 'test-key');
       expect(prefs.getString('theme_mode'), 'dark');
       expect(prefs.getBool('onboarded'), true);
       expect(prefs.getInt('reminder_minutes'), 30);

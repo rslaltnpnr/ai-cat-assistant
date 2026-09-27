@@ -161,7 +161,7 @@ class _ScreenWatchOverlayState extends State<_ScreenWatchOverlay> {
 
   Future<void> _loadProfile() async {
     final prefs = await SharedPreferences.getInstance();
-    final settings = SettingsService(prefs);
+    final settings = await SettingsService.create(prefs);
     if (!mounted) return;
     setState(() {
       _settings = settings;

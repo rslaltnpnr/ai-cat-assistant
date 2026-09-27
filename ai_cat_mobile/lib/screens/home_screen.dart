@@ -108,8 +108,10 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _init() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
+    final settings = await SettingsService.create(prefs);
+    if (!mounted) return;
     setState(() {
-      _settings = SettingsService(prefs);
+      _settings = settings;
       _history = HistoryService(prefs);
     });
     // Ana ekran widget'indaki baglanti durumu satirinin ilk 45sn'lik
@@ -312,8 +314,10 @@ class _HomeScreenState extends State<HomeScreen> {
       final count = await BackupService().importBackup(content);
       final prefs = await SharedPreferences.getInstance();
       if (!mounted) return;
+      final settings = await SettingsService.create(prefs);
+      if (!mounted) return;
       setState(() {
-        _settings = SettingsService(prefs);
+        _settings = settings;
         _history = HistoryService(prefs);
       });
       widget.onThemeModeChanged(_settings!.themeMode);
