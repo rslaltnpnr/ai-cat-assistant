@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:http/http.dart' as http;
 
 /// Gemini isteklerinde olusan hatalari kullanici dostu, kisa bir Turkce
 /// mesaja cevirir; sohbet panelinde ham SDK/HTTP hatasi yerine bu
@@ -32,6 +34,13 @@ class GeminiService {
     caseSensitive: false,
   );
 
+  /// Yalnizca testler icin: verilirse GenerativeModel'e gercek ag yerine
+  /// bu http.Client enjekte edilir (bkz. test/gemini_service_test.dart).
+  /// Normal kullanimda null kalir, SDK kendi varsayilan istemcisini kurar.
+  final http.Client? httpClient;
+
+  GeminiService({this.httpClient});
+
   Future<String> ask({
     required String apiKey,
     required String modelName,
@@ -39,19 +48,8 @@ class GeminiService {
     required String question,
     Uint8List? imageBytes,
   }) async {
-    final persona = Content.system(
-      "Senin adin '$characterName'. Kullanicinin telefonunda yasayan, "
-      "gonderdigi gorselleri gorebilen sevimli bir kedi yapay zeka "
-      "asistanisin. Kendini her zaman bu isimle tanit; Google tarafindan "
-      "gelistirilmis bir dil modeli oldugunu veya hangi sirkete/modele ait "
-      "oldugunu asla soyleme. Kisa, samimi ve yardimsever konus.",
-    );
-
-    final parts = <Part>[TextPart(question)];
-    if (imageBytes != null) {
-      parts.add(DataPart('image/jpeg', imageBytes));
-    }
-    final content = [Content.multi(parts)];
+    final persona = _persona(characterName);
+    final content = _content(question, imageBytes);
 
     Object finalError;
     try {
@@ -87,9 +85,144 @@ class GeminiService {
     throw GeminiRequestException(_friendlyMessage(finalError));
   }
 
+  /// [ask] ile ayni istegi, yaniti tek seferde beklemek yerine parca parca
+  /// (Gemini'nin akis API'siyle) yayinlar. Ilk parca alinana kadar olan
+  /// hatalarda [ask] ile ayni yeniden deneme/yedek model mantigi gecerlidir;
+  /// akis BASLADIKTAN SONRA (en az bir parca yayinlandiktan sonra) olusan
+  /// bir hata ASLA yeniden denenmez - kismen gosterilmis bir yanitin
+  /// bastan, hatta baska bir modelden tekrarlanmasi kullaniciyi
+  /// sasirtirdi; bunun yerine akis doğrudan hata firlatarak sonlanir.
+  ///
+  /// Not: Dart'ta `try { yield* altAkis(); } catch (e) {}` altAkis'in
+  /// firlattigi hatalari YAKALAMAZ (dogrulanmis dil davranisi) - bu yuzden
+  /// burada `yield*` hic kullanilmiyor; akis dogrudan `yield` ile, tek
+  /// seviyeli ve tek bir try/catch icinde uretiliyor.
+  Stream<String> askStream({
+    required String apiKey,
+    required String modelName,
+    required String characterName,
+    required String question,
+    Uint8List? imageBytes,
+  }) async* {
+    final persona = _persona(characterName);
+    final content = _content(question, imageBytes);
+
+    StreamIterator<GenerateContentResponse>? iterator;
+    var obtained = false;
+    Object? finalError;
+    try {
+      iterator = await _obtainStreamIterator(
+        apiKey: apiKey,
+        modelName: modelName,
+        systemInstruction: persona,
+        content: content,
+        maxAttempts: 3,
+      );
+      obtained = true;
+    } catch (primaryError) {
+      finalError = primaryError;
+      final shouldFallback = modelName != fallbackModel &&
+          (_isOverloadError(primaryError) ||
+              _isModelRetiredError(primaryError) ||
+              _isQuotaError(primaryError));
+      if (shouldFallback) {
+        try {
+          iterator = await _obtainStreamIterator(
+            apiKey: apiKey,
+            modelName: fallbackModel,
+            systemInstruction: persona,
+            content: content,
+            maxAttempts: 2,
+          );
+          obtained = true;
+          finalError = null;
+        } catch (fallbackError) {
+          finalError = fallbackError;
+        }
+      }
+    }
+
+    if (!obtained) {
+      throw GeminiRequestException(_friendlyMessage(finalError!));
+    }
+    if (iterator == null) {
+      return; // bos akis
+    }
+
+    try {
+      final firstText = iterator.current.text ?? '';
+      if (firstText.isNotEmpty) yield firstText;
+      while (await iterator.moveNext()) {
+        final text = iterator.current.text ?? '';
+        if (text.isNotEmpty) yield text;
+      }
+    } catch (exc) {
+      throw GeminiRequestException(_friendlyMessage(exc));
+    }
+  }
+
+  Content _persona(String characterName) => Content.system(
+        "Senin adin '$characterName'. Kullanicinin telefonunda yasayan, "
+        "gonderdigi gorselleri gorebilen sevimli bir kedi yapay zeka "
+        "asistanisin. Kendini her zaman bu isimle tanit; Google tarafindan "
+        "gelistirilmis bir dil modeli oldugunu veya hangi sirkete/modele ait "
+        "oldugunu asla soyleme. Kisa, samimi ve yardimsever konus.",
+      );
+
+  List<Content> _content(String question, Uint8List? imageBytes) {
+    final parts = <Part>[TextPart(question)];
+    if (imageBytes != null) {
+      parts.add(DataPart('image/jpeg', imageBytes));
+    }
+    return [Content.multi(parts)];
+  }
+
   String _extractText(GenerateContentResponse response) {
     final text = response.text?.trim();
     return (text == null || text.isEmpty) ? '(Bos yanit dondu)' : text;
+  }
+
+  /// Bir model icin akis baslatmayi dener; ilk parca alinana kadar olan
+  /// hatalarda (asiri yuklenme/kota) yeniden dener. Akis bossa null
+  /// doner; basarili olursa ilk parcaya konumlanmis (moveNext zaten bir
+  /// kez cagrilmis) bir StreamIterator doner - cagiran taraf `.current`
+  /// ile ilk parcayi okuyup sonra `moveNext()` ile devam eder.
+  Future<StreamIterator<GenerateContentResponse>?> _obtainStreamIterator({
+    required String apiKey,
+    required String modelName,
+    required Content systemInstruction,
+    required List<Content> content,
+    required int maxAttempts,
+  }) async {
+    final model = GenerativeModel(
+      model: modelName,
+      apiKey: apiKey,
+      systemInstruction: systemInstruction,
+      httpClient: httpClient,
+    );
+
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      final candidate = StreamIterator(model.generateContentStream(content));
+      try {
+        if (!await candidate.moveNext()) {
+          return null; // bos akis
+        }
+        return candidate;
+      } catch (exc) {
+        final isLastAttempt = attempt == maxAttempts - 1;
+        if (isLastAttempt) rethrow;
+        if (_isOverloadError(exc)) {
+          await Future.delayed(Duration(seconds: 2 * (attempt + 1)));
+          continue;
+        }
+        if (_isQuotaError(exc)) {
+          await Future.delayed(_parseRetryAfter(exc) ?? _defaultQuotaWait);
+          continue;
+        }
+        rethrow;
+      }
+    }
+    return null;
   }
 
   Future<GenerateContentResponse> _generateWithRetry({
@@ -103,6 +236,7 @@ class GeminiService {
       model: modelName,
       apiKey: apiKey,
       systemInstruction: systemInstruction,
+      httpClient: httpClient,
     );
 
     for (var attempt = 0; attempt < maxAttempts; attempt++) {

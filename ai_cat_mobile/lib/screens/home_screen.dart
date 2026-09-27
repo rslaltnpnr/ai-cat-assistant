@@ -636,7 +636,11 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<String> _handleQuestion(String question, Uint8List? imageBytes) async {
+  Future<String> _handleQuestion(
+    String question,
+    Uint8List? imageBytes,
+    void Function(String chunk) onChunk,
+  ) async {
     final settings = _settings!;
     final history = _history!;
     final apiKey = settings.apiKey;
@@ -651,13 +655,18 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _catState = CatState.stern);
 
     try {
-      final answer = await _gemini.ask(
+      final buffer = StringBuffer();
+      await for (final piece in _gemini.askStream(
         apiKey: apiKey,
         modelName: settings.modelName,
         characterName: settings.characterName,
         question: question,
         imageBytes: imageBytes,
-      );
+      )) {
+        buffer.write(piece);
+        onChunk(piece);
+      }
+      final answer = buffer.isEmpty ? '(Bos yanit dondu)' : buffer.toString();
       history.add(
         ChatEntry(
           time: DateTime.now(),
