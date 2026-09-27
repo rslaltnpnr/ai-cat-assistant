@@ -115,6 +115,18 @@ karakteri (PyQt6).
   Sag tik menusundeki "Onceki Sohbeti Hatirla (Baglam)" onay kutusuyla
   kapatilabilir - kapatilirsa her soru, Sohbet Gecmisi'ne bakilmaksizin
   yeniden bagimsiz olarak sorulur.
+- **Ajan araclari**: kedi artik sohbet sirasinda Gemini'nin "function
+  calling" ozelligiyle bilgisayarda gercek islemler yapabilir -
+  **Google Arama** (guncel bilgi gerektiren sorularda otomatik olarak
+  kullanilir), **dosyaya yazma** ("bana su kodu yaz" -> belirtilen yola
+  dosya olarak yazar) ve **uygulama acma** (ismini soyleyerek zaten
+  yuklu bir programi baslatma). Bilincli sinirlar: dosyaya yazma aracı
+  yazdigi dosyayi ASLA calistirmaz (calistirmak size kalir) ve hicbir
+  arac serbest kabuk/komut calistiramaz - uygulama acma bile
+  `os.startfile`/PATH cozumlemesiyle yapilir, bir kabuk (shell)
+  yorumlayiciya asla string birlestirilerek gonderilmez (kabuk
+  enjeksiyonu riski yok). Her arac cagrisi, seffaflik icin "Bildirim
+  Gecmisi"ne kaydedilir.
 - **Guvenilirlik**: beklenmeyen bir hata olursa traceback `crash.log`'a
   yazilir ve uygulama kendini otomatik olarak yeniden baslatir (cok kisa
   arayla ust uste cokerse - baslangic hatasi dongusu - tekrar baslatmaz,
