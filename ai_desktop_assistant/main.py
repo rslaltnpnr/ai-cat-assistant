@@ -35,6 +35,20 @@ from collections import deque
 from datetime import datetime, timedelta
 from urllib.parse import urlencode, urlparse
 
+import keyring
+import keyring.errors
+
+# PyInstaller'in tek dosyalik (--onefile) derlemesinde keyring'in normal
+# backend kesfi (importlib.metadata entry point taramasi) guvenilir
+# calismayabilir - bu yuzden Windows'ta kullanilacak backend acikca
+# sabitleniyor (keyring'in kendi onerdigi PyInstaller uyumluluk yontemi).
+# Diger platformlarda (yalnizca yerel gelistirme/test icin, urun sadece
+# Windows .exe olarak dagitiliyor) varsayilan otomatik kesfe birakiliyor.
+if sys.platform == "win32":
+    import keyring.backends.Windows
+
+    keyring.set_keyring(keyring.backends.Windows.WinVaultKeyring())
+
 from PyQt6.QtCore import QObject, QPoint, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
@@ -232,7 +246,7 @@ REMOTE_LIVE_SPECIAL_KEY_NAMES = frozenset(
     }
 )
 
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.10.0"
 GITHUB_REPO = "rslaltnpnr/ai-cat-assistant"
 UPDATE_CHECK_TIMEOUT_SECONDS = 5
 UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 60
@@ -264,6 +278,16 @@ DEFAULT_CONFIG = {
 }
 
 GEMINI_API_KEY_URL = "https://aistudio.google.com/apikey"
+
+# Bu anahtarlar hicbir zaman config.json'a duz metin yazilmaz - bunun
+# yerine isletim sisteminin sifreli kasasina (Windows Credential Manager,
+# "keyring" kutuphanesi uzerinden) tasinir. Bkz. ConfigManager._keyring_get/
+# _keyring_set. Kasa gercekten kullanilamiyorsa (orn. Linux'ta gelistirme/
+# test ortami - urun yalnizca Windows .exe olarak dagitiliyor, bkz.
+# release-desktop.yml) ConfigManager sessizce eski duz metin davranisina
+# geri duser, boylece uygulama hicbir platformda calismaz hale gelmez.
+SECRET_CONFIG_KEYS = {"gemini_api_key"}
+KEYRING_SERVICE_NAME = "AI Kedi Asistani"
 
 # "Ayarlari Disa/Ice Aktar" ile paylasilabilen kisisellestirme ayarlari -
 # _export_backup/_import_backup'taki tam yedeklemenin aksine, gizli
@@ -387,6 +411,16 @@ class ConfigManager:
     def __init__(self, path):
         self.path = path
         self.data = dict(DEFAULT_CONFIG)
+        # DEFAULT_CONFIG'teki gizli anahtarlarin yer tutucu degerleri (orn.
+        # "gemini_api_key": "") self.data'da hic yasamamali - load() diskten
+        # bir sey okumasa bile (yeni kurulum) bu satir olmadan asagida
+        # atlanan migrasyon adimi calismayinca bu yer tutucular kalici
+        # olarak self.data'da (ve dolayisiyla config.json'da) kalirdi.
+        for key in SECRET_CONFIG_KEYS:
+            self.data.pop(key, None)
+        # Baslangicta iyimser: gercekten calisip calismadigi ilk
+        # _keyring_get/_keyring_set cagrisinda anlasilir (bkz. asagisi).
+        self._keyring_available = True
         self.load()
 
     def load(self):
@@ -406,6 +440,7 @@ class ConfigManager:
                 # gerek yok - yeni kurulumdan ayirt etmek icin.
                 self.data["onboarding_completed"] = True
                 self.save()
+            self._migrate_secrets_to_keyring(loaded)
         else:
             self.save()
         self._ensure_remote_pin()
@@ -414,6 +449,46 @@ class ConfigManager:
         if self.data.get("model_name") in DEPRECATED_MODELS:
             self.data["model_name"] = DEFAULT_CONFIG["model_name"]
             self.save()
+
+    def _migrate_secrets_to_keyring(self, loaded):
+        """[loaded] (diskteki config.json'un ham icerigi ya da eski bir
+        yedek dosyasindan geri yuklenen "config" sozlugu) SECRET_CONFIG_KEYS
+        icinden duz metin bir deger iceriyorsa, isletim sisteminin sifreli
+        kasasina tasir. self.data'da bu anahtarlar HICBIR ZAMAN kalmaz -
+        boylece hem config.json hem de "Yedek Al" ile alinan tam yedekler
+        (self.config.data'yi oldugu gibi JSON'a yazar, bkz. _export_backup)
+        bir daha API anahtarini duz metin icermez."""
+        migrated = False
+        for key in SECRET_CONFIG_KEYS:
+            plaintext_value = loaded.get(key)
+            if plaintext_value:
+                self._keyring_set(key, plaintext_value)
+                migrated = True
+            self.data.pop(key, None)
+        if migrated:
+            self.save()
+
+    def _keyring_set(self, key, value):
+        if not self._keyring_available:
+            self.data[key] = value
+            return
+        try:
+            keyring.set_password(KEYRING_SERVICE_NAME, key, value)
+        except keyring.errors.KeyringError:
+            # Bu makinede/ortamda kullanilabilir bir kasa yok (orn. Linux
+            # gelistirme ortami) - eski duz metin davranisina geri don,
+            # uygulama islevsiz kalmasin.
+            self._keyring_available = False
+            self.data[key] = value
+
+    def _keyring_get(self, key):
+        if not self._keyring_available:
+            return self.data.get(key, DEFAULT_CONFIG.get(key))
+        try:
+            return keyring.get_password(KEYRING_SERVICE_NAME, key) or DEFAULT_CONFIG.get(key)
+        except keyring.errors.KeyringError:
+            self._keyring_available = False
+            return self.data.get(key, DEFAULT_CONFIG.get(key))
 
     def _ensure_remote_pin(self):
         if not self.data.get("remote_pin"):
@@ -428,9 +503,15 @@ class ConfigManager:
             pass
 
     def get(self, key):
+        if key in SECRET_CONFIG_KEYS:
+            return self._keyring_get(key)
         return self.data.get(key)
 
     def set(self, key, value):
+        if key in SECRET_CONFIG_KEYS:
+            self._keyring_set(key, value)
+            self.save()  # data degismis olabilir (kasa yoksa duz metin dusme)
+            return
         self.data[key] = value
         self.save()
 
@@ -4313,8 +4394,9 @@ class CatCharacter(QWidget):
             self,
             "Yedek Alindi",
             f"Yedek kaydedildi:\n{path}\n\n"
-            "Not: Bu dosya Gemini API anahtarinizi ve uzaktan kumanda PIN'inizi "
-            "duz metin olarak icerir - baskalariyla paylasmayin.",
+            "Not: Gemini API anahtariniz isletim sisteminin sifreli kasasinda "
+            "kaldigi icin bu dosyaya dahil edilmez. Ancak uzaktan kumanda "
+            "PIN'inizi duz metin olarak icerir - baskalariyla paylasmayin.",
         )
 
     def _import_backup(self):
@@ -4346,6 +4428,11 @@ class CatCharacter(QWidget):
         config_data = backup.get("config")
         if isinstance(config_data, dict):
             self.config.data.update(config_data)
+            # Sifreleme eklenmeden once alinmis eski bir yedek, API
+            # anahtarini duz metin icerebilir - dogrudan yukarida self.data'ya
+            # yazilmis olabilir; bunu hemen kasaya tasiyip self.data'dan
+            # temizler (bkz. ConfigManager._migrate_secrets_to_keyring).
+            self.config._migrate_secrets_to_keyring(config_data)
             self.config.save()
         history_data = backup.get("history")
         if isinstance(history_data, list):
