@@ -18,6 +18,7 @@ import base64
 import hmac
 import http.server
 import ipaddress
+import itertools
 import json
 import os
 import random
@@ -246,7 +247,7 @@ REMOTE_LIVE_SPECIAL_KEY_NAMES = frozenset(
     }
 )
 
-APP_VERSION = "1.10.0"
+APP_VERSION = "1.11.0"
 GITHUB_REPO = "rslaltnpnr/ai-cat-assistant"
 UPDATE_CHECK_TIMEOUT_SECONDS = 5
 UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 60
@@ -2629,6 +2630,11 @@ def build_persona_prompt(character_name, personality):
 class GeminiWorker(QThread):
     finished_ok = pyqtSignal(str)
     finished_error = pyqtSignal(str)
+    # Yanit parca parca geldikce (bkz. generate_content_stream) her parca
+    # metnini yayinlar - ChatBubble bunu biriktirip aninda gosterir.
+    # finished_ok yine de TAM (birikmis, stripped) metni tasir; ChatHistory
+    # kaydi ve son goruntu her zaman finished_ok'a dayanir.
+    chunk_received = pyqtSignal(str)
 
     def __init__(
         self,
@@ -2707,21 +2713,38 @@ class GeminiWorker(QThread):
         try:
             client = genai.Client(api_key=self.api_key)
             try:
-                response = self._generate_with_retry(client, self.model_name, contents, gen_config)
+                stream = self._generate_stream_with_retry(client, self.model_name, contents, gen_config)
             except Exception as primary_exc:
                 should_try_fallback = self.model_name != FALLBACK_MODEL and (
                     self._is_overload_error(primary_exc) or self._is_model_retired_error(primary_exc)
                 )
                 if should_try_fallback:
                     try:
-                        response = self._generate_with_retry(
+                        stream = self._generate_stream_with_retry(
                             client, FALLBACK_MODEL, contents, gen_config, retry_delays=(2,)
                         )
                     except Exception:
                         raise primary_exc
                 else:
                     raise
-            text = (response.text or "").strip() or "(Bos yanit dondu)"
+
+            accumulated = ""
+            try:
+                for chunk in stream:
+                    piece = chunk.text or ""
+                    if not piece:
+                        continue
+                    accumulated += piece
+                    self.chunk_received.emit(piece)
+            except Exception as exc:
+                # Ilk parcalar zaten ekranda gosterilmis olabilir - baska bir
+                # modelle bastan denemek kullaniciya yarim kalmis + tekrarlanan
+                # bir metin gosterirdi, bu yuzden akis ortasindaki bir hata
+                # (retry/fallback yerine) dogrudan hata olarak bildirilir.
+                self.finished_error.emit(f"Gemini API hatasi (yanit yarida kesildi): {exc}")
+                return
+
+            text = accumulated.strip() or "(Bos yanit dondu)"
             self.finished_ok.emit(text)
         except Exception as exc:
             self.finished_error.emit(f"Gemini API hatasi: {exc}")
@@ -2736,13 +2759,26 @@ class GeminiWorker(QThread):
         text = str(exc).lower()
         return "404" in text or "not_found" in text or "no longer available" in text
 
-    def _generate_with_retry(self, client, model_name, contents, gen_config, retry_delays=OVERLOAD_RETRY_DELAYS):
+    def _generate_stream_with_retry(
+        self, client, model_name, contents, gen_config, retry_delays=OVERLOAD_RETRY_DELAYS
+    ):
+        """generate_content_stream() bir iterator dondurur ve gercek istek
+        ilk parca cekilene kadar baslamaz - bu yuzden retry/fallback
+        mantigi (503 gibi anlik hatalari yakalamak icin) ilk parcayi burada
+        aciktan cekip geri kalan akisla birlestirir (itertools.chain).
+        Boylece cagiran taraf, olusma noktasindan bagimsiz olarak duz bir
+        akis uzerinde `for chunk in stream` yapabilir."""
         attempts = len(retry_delays) + 1
         for attempt in range(attempts):
             try:
-                return client.models.generate_content(
+                stream = client.models.generate_content_stream(
                     model=model_name, contents=contents, config=gen_config
                 )
+                try:
+                    first_chunk = next(stream)
+                except StopIteration:
+                    return iter(())
+                return itertools.chain([first_chunk], stream)
             except Exception as exc:
                 is_last_attempt = attempt == attempts - 1
                 if is_last_attempt or not self._is_overload_error(exc):
@@ -2770,6 +2806,7 @@ class ChatBubble(QWidget):
     def __init__(self, character_name, theme_mode="dark"):
         super().__init__()
         self.theme_mode = theme_mode
+        self._streaming_text = None
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -2857,6 +2894,16 @@ class ChatBubble(QWidget):
     def show_thinking(self):
         self.ask_button.setEnabled(False)
         self.response_area.setPlainText("Dusunuyor...")
+        self._streaming_text = None
+
+    def append_chunk(self, piece):
+        """GeminiWorker.chunk_received - yanit parca parca gelirken her
+        parcayi biriktirip aninda gosterir. Ilk parca "Dusunuyor..."
+        yer tutucusunun yerini alir."""
+        self._streaming_text = (self._streaming_text or "") + piece
+        self.response_area.setPlainText(self._streaming_text)
+        scrollbar = self.response_area.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
     def show_response(self, text):
         self.ask_button.setEnabled(True)
@@ -3743,6 +3790,8 @@ class CatCharacter(QWidget):
             personality=self.config.get("personality"),
             history_context=self._recent_context(),
         )
+        if self.bubble:
+            self.worker.chunk_received.connect(self.bubble.append_chunk)
         self.worker.finished_ok.connect(self._on_answer)
         self.worker.finished_error.connect(self._on_answer_error)
         self.worker.start()
