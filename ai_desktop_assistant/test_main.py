@@ -9,10 +9,13 @@ Calistirmak icin:
     pytest
 """
 
+import json
 import tempfile
 from datetime import datetime, timedelta
 
 import pytest
+
+import main
 
 from main import (
     ConfigManager,
@@ -858,6 +861,91 @@ class TestApplySettingsProfile:
         apply_settings_profile(dest, profile)
         assert dest.get("character_name") == "Pati"
         assert dest.get("theme_mode") == "light"
+
+
+class TestConfigManagerSecretStorage:
+    """Gemini API anahtarinin duz metin yerine isletim sistemi kasasina
+    (keyring) tasindigi ConfigManager davranisi - bkz. main.py
+    SECRET_CONFIG_KEYS, ConfigManager._keyring_get/_keyring_set/
+    _migrate_secrets_to_keyring."""
+
+    def _fake_keyring(self, monkeypatch):
+        """keyring.set_password/get_password'u bellek-ici sahte bir kasayla
+        degistirir - "bu makinede calisan bir kasa VAR" senaryosunu simule
+        eder. Donen dict dogrudan incelenebilir."""
+        store = {}
+        monkeypatch.setattr(
+            main.keyring,
+            "set_password",
+            lambda service, key, value: store.__setitem__((service, key), value),
+        )
+        monkeypatch.setattr(
+            main.keyring,
+            "get_password",
+            lambda service, key: store.get((service, key)),
+        )
+        return store
+
+    def test_kasa_yoksa_islevsellik_korunur_duz_metine_duser(self, tmp_path):
+        # Bu sandbox'ta zaten calisan bir keyring backend'i yok
+        # (NoKeyringError) - gercek keyring modulune dokunmadan dogal
+        # olarak fallback yolunu sinar.
+        config = ConfigManager(str(tmp_path / "config.json"))
+        config.set("gemini_api_key", "test-anahtar")
+        assert config.get("gemini_api_key") == "test-anahtar"
+        with open(tmp_path / "config.json", encoding="utf-8") as f:
+            saved = json.load(f)
+        assert saved.get("gemini_api_key") == "test-anahtar"
+
+    def test_kasa_varsa_config_dosyasi_duz_metin_icermez(self, tmp_path, monkeypatch):
+        store = self._fake_keyring(monkeypatch)
+        config = ConfigManager(str(tmp_path / "config.json"))
+        config.set("gemini_api_key", "gizli-anahtar")
+        assert config.get("gemini_api_key") == "gizli-anahtar"
+        assert store[(main.KEYRING_SERVICE_NAME, "gemini_api_key")] == "gizli-anahtar"
+        assert "gemini_api_key" not in config.data
+        with open(tmp_path / "config.json", encoding="utf-8") as f:
+            saved = json.load(f)
+        assert "gemini_api_key" not in saved
+
+    def test_eski_duz_metin_config_yuklenince_kasaya_tasinir(self, tmp_path, monkeypatch):
+        store = self._fake_keyring(monkeypatch)
+        path = tmp_path / "config.json"
+        path.write_text(
+            json.dumps({"character_name": "Pati", "gemini_api_key": "eski-anahtar"}),
+            encoding="utf-8",
+        )
+        config = ConfigManager(str(path))
+        assert config.get("gemini_api_key") == "eski-anahtar"
+        assert store[(main.KEYRING_SERVICE_NAME, "gemini_api_key")] == "eski-anahtar"
+        with open(path, encoding="utf-8") as f:
+            saved = json.load(f)
+        assert "gemini_api_key" not in saved
+        assert saved.get("character_name") == "Pati"
+
+    def test_yedekten_eski_duz_metin_geri_yuklenince_kasaya_tasinir(
+        self, tmp_path, monkeypatch
+    ):
+        # _import_backup'in cagirdigi tam yol: once self.config.data.update()
+        # ile eski yedekten gelen duz metin dogrudan data'ya yaziliyor, sonra
+        # _migrate_secrets_to_keyring bunu kasaya tasiyip data'dan temizliyor.
+        store = self._fake_keyring(monkeypatch)
+        config = ConfigManager(str(tmp_path / "config.json"))
+        old_backup_config = {"character_name": "Pati", "gemini_api_key": "yedek-anahtari"}
+        config.data.update(old_backup_config)
+        config._migrate_secrets_to_keyring(old_backup_config)
+        assert "gemini_api_key" not in config.data
+        assert store[(main.KEYRING_SERVICE_NAME, "gemini_api_key")] == "yedek-anahtari"
+        assert config.get("gemini_api_key") == "yedek-anahtari"
+
+    def test_remote_pin_kasaya_tasinmaz_kapsam_disi(self, tmp_path, monkeypatch):
+        self._fake_keyring(monkeypatch)
+        config = ConfigManager(str(tmp_path / "config.json"))
+        config.set("remote_pin", "123456")
+        assert config.data.get("remote_pin") == "123456"
+        with open(tmp_path / "config.json", encoding="utf-8") as f:
+            saved = json.load(f)
+        assert saved.get("remote_pin") == "123456"
 
 
 class TestOnboardingCompleted:

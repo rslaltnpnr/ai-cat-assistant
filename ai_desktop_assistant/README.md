@@ -216,10 +216,12 @@ karakteri (PyQt6).
   bir release yayinlanmamissa ya da internete erisim yoksa sessizce yok
   sayilir.
 - **Yedekleme / geri yukleme**: sag tik menusundeki "Yedek Al..." ile
-  ayarlarinizi (API anahtari, PIN dahil) ve sohbet gecmisinizi tek bir
-  JSON dosyasina kaydedebilir, "Yedekten Geri Yukle..." ile baska bir
-  bilgisayarda (ya da yeniden kurulumdan sonra) geri yukleyebilirsiniz.
-  Yedek dosyasi hassas bilgiler icerir - baskalariyla paylasmayin.
+  ayarlarinizi (uzaktan kumanda PIN'i dahil) ve sohbet gecmisinizi tek
+  bir JSON dosyasina kaydedebilir, "Yedekten Geri Yukle..." ile baska
+  bir bilgisayarda (ya da yeniden kurulumdan sonra) geri yukleyebilirsiniz.
+  Gemini API anahtariniz isletim sisteminin sifreli kasasinda (Windows
+  Credential Manager) kaldigi icin bu dosyaya dahil edilmez. Yedek
+  dosyasi yine de hassas bilgiler icerir - baskalariyla paylasmayin.
   Ayrica sag tik menusundeki "Otomatik Yedekleme (Gunluk)" acikken
   (varsayilan), uygulama gunde bir kez ayni formatta bir yedegi
   `backups/` klasorune sessizce kaydeder ve en fazla son 7 tanesini

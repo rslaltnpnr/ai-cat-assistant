@@ -163,8 +163,9 @@ tum masaustunde degil, **uygulamanin kendi ekraninda** rastgele gezinir
 - **Yedekleme / geri yukleme**: Ayarlar penceresindeki "Yedek Al" ile
   ayarlarinizi, uzaktan kumanda profillerinizi ve sohbet gecmisinizi tek
   bir JSON dosyasi olarak paylasabilirsiniz (Dosyalar/Drive/e-posta vb.
-  herhangi bir yere kaydedebilirsiniz - **API anahtarinizi ve PIN'lerinizi
-  duz metin icerir, guvenli saklayin**). Geri yuklemek icin bu dosyayi bir
+  herhangi bir yere kaydedebilirsiniz - **uzaktan kumanda PIN'lerinizi duz
+  metin icerir, guvenli saklayin**; Gemini API anahtariniz cihazin guvenli
+  deposunda kalir, bu dosyaya dahil edilmez). Geri yuklemek icin bu dosyayi bir
   dosya yoneticisinden "Paylas" ile tekrar uygulamaya gonderin; onay
   sorulduktan sonra mevcut verilerin uzerine yazilir. Ayarlardaki
   "Otomatik Yedekleme (Gunluk)" acikken (varsayilan), uygulama her
@@ -361,9 +362,11 @@ saglanmaz) - `release-mobile.yml` secret yoksa bu adimi otomatik atlar.
 
 ## Notlar
 
-- API anahtari ve ayarlar cihazda `shared_preferences` ile duz metin
-  olarak saklanir (masaustu suruumundeki `config.json` ile ayni
-  guvenlik seviyesi) - sifreli bir kasa degildir.
+- Ayarlarin cogu cihazda `shared_preferences` ile duz metin olarak
+  saklanir (masaustu suruumundeki `config.json` ile ayni guvenlik
+  seviyesi) - sifreli bir kasa degildir. TEK ISTISNA Gemini API anahtari:
+  `flutter_secure_storage` uzerinden Android Keystore destekli sifreli
+  depolamaya yazilir (bkz. `SettingsService.apiKey`).
 - `AndroidManifest.xml`'e INTERNET (Gemini API ve uzaktan kumanda icin)
   ve CAMERA (fotograf cekme icin) izinleri zaten eklenmis durumda. Tum ag
   trafigi HTTPS uzerinden gittigi icin `usesCleartextTraffic="false"`

@@ -1,17 +1,26 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart' show ThemeMode;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/remote_profile.dart';
 import 'vibration_pattern.dart';
 import 'widget_service.dart';
 
-/// Ayarlari (API anahtari, kedi ismi, model adi) cihazda saklar.
+/// Ayarlari (kedi ismi, model adi, vb.) cihazda saklar.
 ///
-/// Not: shared_preferences duz metin olarak saklar (masaustu suruminin
-/// config.json'u gibi) - sifrelenmis bir kasa degildir. Cihaz paylasiliyorsa
-/// bunu goz onunde bulundurun.
+/// Not: shared_preferences duz metin olarak saklar (masaustu suruumundeki
+/// eski config.json davranisiyla ayni) - sifrelenmis bir kasa degildir.
+/// TEK ISTISNA [apiKey]: Gemini API anahtari flutter_secure_storage
+/// uzerinden Android Keystore destekli sifreli depolamaya yazilir, asla
+/// SharedPreferences'a duz metin olarak yazilmaz (bkz. [apiKey]).
+///
+/// [apiKey]'in dogru calismasi icin bu sinif dogrudan `SettingsService(prefs)`
+/// yerine ASENKRON `await SettingsService.create(prefs)` ile olusturulmali -
+/// aksi halde apiKey guvenli depodan henuz okunmamis (bos) olarak kalir.
+/// Sadece apiKey'e hic dokunmayan kullanim yerleri (orn. ReminderService)
+/// duz kurucuyu guvenle kullanmaya devam edebilir.
 class SettingsService {
   static const _keyApiKey = 'gemini_api_key';
   static const _keyCharacterName = 'character_name';
@@ -42,12 +51,61 @@ class SettingsService {
   static const _keyLastSeenCrash = 'last_seen_crash';
   static const _keyOnboardingCompleted = 'onboarding_completed';
 
+  static const _secureStorage = FlutterSecureStorage();
+
   final SharedPreferences _prefs;
+  String _cachedApiKey = '';
 
   SettingsService(this._prefs);
 
-  String get apiKey => _prefs.getString(_keyApiKey) ?? '';
-  set apiKey(String value) => _prefs.setString(_keyApiKey, value);
+  /// [SettingsService(prefs)] ile ayni ama donen instance'in [apiKey]
+  /// alani guvenli depodan okunup belleğe alinmis, kullanima hazir olur.
+  /// Ayrica SharedPreferences'ta hala duz metin bir API anahtari varsa
+  /// (bu ozellik eklenmeden once kaydedilmis ya da eski bir yedekten geri
+  /// yuklenmis) onu guvenli depoya tasiyip SharedPreferences'tan siler.
+  static Future<SettingsService> create(SharedPreferences prefs) async {
+    final service = SettingsService(prefs);
+    await service._loadApiKey();
+    return service;
+  }
+
+  Future<void> _loadApiKey() async {
+    final legacyPlaintext = _prefs.getString(_keyApiKey);
+    if (legacyPlaintext != null && legacyPlaintext.isNotEmpty) {
+      await _secureStorage.write(key: _keyApiKey, value: legacyPlaintext);
+      await _prefs.remove(_keyApiKey);
+      // SharedPreferences'ta duz metin bir anahtar bulunmasi, uygulamanin
+      // daha once kurulup kullanildiginin kaniti - ilk calistirma
+      // sihirbazini artik gostermeye gerek yok. containsKey(_keyApiKey)
+      // biraz sonra silindigi icin _looksLikeExistingInstall bunu bir
+      // daha yakalayamaz, bu yuzden bayrak burada aciktan yazilir.
+      if (!_prefs.containsKey(_keyOnboardingCompleted)) {
+        await _prefs.setBool(_keyOnboardingCompleted, true);
+      }
+    }
+    _cachedApiKey = await _secureStorage.read(key: _keyApiKey) ?? '';
+  }
+
+  /// [BackupService.importBackup] gibi bir SettingsService ornegi olmadan
+  /// calisan yerlerin, sifreleme eklenmeden once alinmis eski bir yedekten
+  /// gelen duz metin API anahtarini dogrudan guvenli depoya yazabilmesi
+  /// icin - SharedPreferences'a hic dokunulmaz.
+  static Future<void> migrateLegacyApiKey(String value) =>
+      _secureStorage.write(key: _keyApiKey, value: value);
+
+  /// Belleğe alinmis deger - [create] ile olusturulmamis (yalnizca duz
+  /// `SettingsService(prefs)`) bir instance'ta her zaman bos doner, cunku
+  /// guvenli depo henuz okunmamistir. apiKey kullanan tum ekranlar
+  /// [create] ile olusturulmus, paylasilan bir instance'i kullanir (bkz.
+  /// HomeScreen._settings, _AiCatAppState._settings, ScreenWatchOverlay
+  /// _settings) - dogrudan bu sinif icinde zorlanmaz, cunku bazi kullanim
+  /// yerleri (orn. ReminderService) apiKey'e hic dokunmadigi icin bu
+  /// asenkron adimi gereksiz yere beklememelidir.
+  String get apiKey => _cachedApiKey;
+  set apiKey(String value) {
+    _cachedApiKey = value;
+    _secureStorage.write(key: _keyApiKey, value: value);
+  }
 
   String get characterName => _prefs.getString(_keyCharacterName) ?? 'Fuff';
   set characterName(String value) => _prefs.setString(_keyCharacterName, value);

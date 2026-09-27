@@ -102,13 +102,15 @@ class _AiCatAppState extends State<AiCatApp> {
   Future<void> _handleOverlayCloseRequest() async {
     await FlutterOverlayWindow.closeOverlay();
     final prefs = await SharedPreferences.getInstance();
+    // apiKey'e dokunulmuyor, guvenli depo okumasini beklemeye gerek yok.
     SettingsService(prefs).screenWatchOverlayEnabled = false;
   }
 
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
-    final settings = SettingsService(prefs);
+    final settings = await SettingsService.create(prefs);
+    if (!mounted) return;
     setState(() {
       _settings = settings;
       _themeMode = settings.themeMode;

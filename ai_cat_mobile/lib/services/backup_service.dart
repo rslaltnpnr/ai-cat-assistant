@@ -44,7 +44,11 @@ List<String> autoBackupFilesToDelete(
 /// Ayarlari, uzaktan kumanda profillerini ve sohbet gecmisini tek bir JSON
 /// dosyasina yedekler / geri yukler. Butun SharedPreferences anahtarlarinin
 /// ham bir anlik goruntusunu alir - masaustu suruumundeki "Yedek Al" ile
-/// ayni felsefe (her sey dahil, API anahtari ve PIN'ler dahil).
+/// ayni felsefe (PIN'ler dahil). TEK ISTISNA Gemini API anahtari: o artik
+/// SharedPreferences'ta degil, cihazin guvenli deposunda tutuldugu icin
+/// (bkz. SettingsService.apiKey) bu ham anlik goruntude hic yer almaz.
+/// importBackup, sifreleme eklenmeden once alinmis eski bir yedekte hala
+/// duz metin API anahtari bulursa onu ozel olarak guvenli depoya tasir.
 ///
 /// Disari aktarma icin sistem paylasim sayfasini (share_plus) kullanir -
 /// kullanici dosyayi Dosyalar/Drive/e-posta vb. herhangi bir yere
@@ -74,8 +78,9 @@ class BackupService {
     await SharePlus.instance.share(
       ShareParams(
         files: [XFile(file.path)],
-        text: 'AI Kedi Asistanı yedeği - API anahtarınızı ve PIN\'lerinizi '
-            'içerir, güvenli saklayın.',
+        text: 'AI Kedi Asistanı yedeği - uzaktan kumanda PIN\'lerinizi '
+            'içerir, güvenli saklayın. (Gemini API anahtarınız cihazın '
+            'güvenli deposunda kalır, bu dosyaya dahil edilmez.)',
       ),
     );
   }
@@ -153,6 +158,16 @@ class BackupService {
     var count = 0;
     for (final entry in snapshot.entries) {
       final value = entry.value;
+      // Sifreleme eklenmeden once alinmis eski bir yedekte hala duz metin
+      // bir API anahtari bulunabilir - SharedPreferences'a YAZILMAZ,
+      // dogrudan guvenli depoya tasinir (bkz. SettingsService.apiKey/
+      // migrateLegacyApiKey). Yeni format yedeklerde bu anahtar zaten hic
+      // bulunmaz (bkz. shareBackup/maybeAutoBackup).
+      if (entry.key == 'gemini_api_key' && value is String && value.isNotEmpty) {
+        await SettingsService.migrateLegacyApiKey(value);
+        count++;
+        continue;
+      }
       bool ok;
       if (value is String) {
         ok = await prefs.setString(entry.key, value);
