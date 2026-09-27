@@ -7,3 +7,14 @@ pynput>=1.7
 cryptography>=41.0
 qrcode>=7.4
 keyring>=24.0
+SpeechRecognition>=3.10
+pyttsx3>=2.90
+# NOT: SpeechRecognition'in Microphone sinifi ayrica PyAudio'ya ihtiyac
+# duyar ama o BILEREK burada degil - Windows'ta PyPI'de derlenmis wheel'ler
+# oldugu icin sorunsuz kurulur (bkz. release-desktop.yml), ama Linux'ta
+# (bu repodaki CI test isi dahil) PortAudio gelistirme basliklari olmadan
+# kaynaktan derlenmeye calisir ve BASARISIZ olur. Mikrofon ozelligi
+# kurulu degilse sessizce kullanilamaz hale gelir; uygulamanin geri kalani
+# (metinle sohbet dahil) bundan etkilenmez - kasti bir tasarim, bkz.
+# SpeechToTextWorker. Yerel gelistirmede mikrofonu denemek icin elle
+# `pip install pyaudio` calistirin (Linux'ta once portaudio19-dev gerekir).

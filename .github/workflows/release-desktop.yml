@@ -32,13 +32,26 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
+          # PyAudio bilerek requirements.txt'te degil (Linux'taki test CI'i
+          # PortAudio basliklari olmadan derlemeye calisip patlardi - bkz.
+          # requirements.txt'teki not). Burada, sadece Windows derlemesinde,
+          # PyPI'nin hazir wheel'iyle sorunsuz kurulur.
+          pip install pyaudio
 
       - name: Modulu derle (syntax kontrolu)
         run: python -m py_compile main.py
 
       - name: .exe olarak derle (PyInstaller)
+        # pyttsx3, isletim sistemine gore konusma motorunu (Windows'ta
+        # sapi5) importlib.import_module ile calisma zamaninda, string'den
+        # yukler - PyInstaller'in statik analizi bunu goremez, bu yuzden
+        # --hidden-import ile acikca belirtilmezse derlenmis .exe'de
+        # "sesli yanit" ozelligi calisma zamaninda "bilinmeyen surucu"
+        # hatasi verir (bkz. main.py TextToSpeechWorker).
         run: >
           pyinstaller --onefile --windowed --name "AI-Kedi-Asistani"
+          --hidden-import "pyttsx3.drivers"
+          --hidden-import "pyttsx3.drivers.sapi5"
           --add-data "assets;assets" main.py
 
       # WINDOWS_CODESIGN_PFX_BASE64 secret'i tanimli degilse bu adim

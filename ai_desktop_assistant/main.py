@@ -248,7 +248,7 @@ REMOTE_LIVE_SPECIAL_KEY_NAMES = frozenset(
     }
 )
 
-APP_VERSION = "1.12.0"
+APP_VERSION = "1.13.0"
 GITHUB_REPO = "rslaltnpnr/ai-cat-assistant"
 UPDATE_CHECK_TIMEOUT_SECONDS = 5
 UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 60
@@ -3021,6 +3021,107 @@ class GeminiWorker(QThread):
                 time.sleep(retry_delays[attempt])
 
 
+# --------------------------------------------------------------------------
+# Sesli sohbet: konusma balonundaki mikrofon dugmesiyle soru sesle sorulabilir
+# (SpeechToTextWorker), sesle sorulan bir sorunun cevabi da sesle okunur
+# (TextToSpeechWorker) - "Sesli Ajan" (kaldirilmisti, bkz. gecmis PR #93)
+# ile karistirilmamali: burada otonom ekran izleme/adim atma YOK, sadece
+# normal sohbet akisinin giris/cikisina ses eklenir. Her iki kutuphane de
+# (SpeechRecognition/pyttsx3) kurulu degilse ya da bir ses aygiti
+# bulunamazsa ozellik sessizce kullanilamaz hale gelir - uygulamanin geri
+# kalani bundan etkilenmez.
+# --------------------------------------------------------------------------
+
+class SpeechToTextWorker(QThread):
+    """Mikrofonu dinler, konusma bitince (sessizlik algilaninca - ayri bir
+    'durdur' dugmesi gerekmez) Google'in ucretsiz konusma tanima servisiyle
+    Turkce metne cevirir."""
+
+    recognized = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def run(self):
+        try:
+            import speech_recognition as sr
+        except ImportError:
+            self.failed.emit(
+                "SpeechRecognition kutuphanesi kurulu degil. "
+                "'pip install SpeechRecognition pyaudio' calistirin."
+            )
+            return
+
+        recognizer = sr.Recognizer()
+        try:
+            with sr.Microphone() as source:
+                recognizer.adjust_for_ambient_noise(source, duration=0.3)
+                audio = recognizer.listen(source, timeout=8, phrase_time_limit=15)
+        except sr.WaitTimeoutError:
+            self.failed.emit("Bir sey duyulmadi, tekrar dener misin?")
+            return
+        except Exception as exc:
+            self.failed.emit(f"Mikrofona erisilemedi: {exc}")
+            return
+
+        try:
+            text = recognizer.recognize_google(audio, language="tr-TR")
+        except sr.UnknownValueError:
+            self.failed.emit("Soyledigini anlayamadim, tekrar dener misin?")
+            return
+        except sr.RequestError as exc:
+            self.failed.emit(f"Ses tanima servisine ulasilamadi: {exc}")
+            return
+        except Exception as exc:
+            self.failed.emit(f"Ses tanima hatasi: {exc}")
+            return
+
+        text = (text or "").strip()
+        if not text:
+            self.failed.emit("Soyledigini anlayamadim, tekrar dener misin?")
+            return
+        self.recognized.emit(text)
+
+
+class TextToSpeechWorker(QThread):
+    """Verilen metni sesle okur - varsa Turkce bir SAPI5 sesi secer, yoksa
+    varsayilan sesle okur (aksan/telaffuz mukemmel olmayabilir ama
+    kullanisli kalir)."""
+
+    failed = pyqtSignal(str)
+
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        self.text = text
+
+    def run(self):
+        try:
+            import pyttsx3
+        except ImportError:
+            self.failed.emit(
+                "pyttsx3 kutuphanesi kurulu degil. 'pip install pyttsx3' calistirin."
+            )
+            return
+        try:
+            engine = pyttsx3.init()
+            self._select_turkish_voice(engine)
+            engine.say(self.text)
+            engine.runAndWait()
+        except Exception as exc:
+            self.failed.emit(f"Sesli okuma hatasi: {exc}")
+
+    @staticmethod
+    def _select_turkish_voice(engine):
+        try:
+            voices = engine.getProperty("voices") or []
+        except Exception:
+            return
+        for voice in voices:
+            name = (getattr(voice, "name", "") or "").lower()
+            vid = (getattr(voice, "id", "") or "").lower()
+            if "turkish" in name or "türkçe" in name or "tr-tr" in vid or "-tr" in vid:
+                engine.setProperty("voice", voice.id)
+                return
+
+
 DEFAULT_QUICK_QUESTIONS = [
     "Ekranimda su an ne var, ozetler misin?",
     "Bu hata mesaji ne anlama geliyor?",
@@ -3042,6 +3143,11 @@ class ChatBubble(QWidget):
         super().__init__()
         self.theme_mode = theme_mode
         self._streaming_text = None
+        # Bu sorunun mikrofonla mi (metin kutusuyla degil) soruldugunu
+        # tutar - CatCharacter._handle_question bunu okuyup cevabi sesle
+        # de okuyup okumayacagina karar verir (bkz. _on_ask/_submit_from_voice).
+        self.last_ask_was_voice = False
+        self._stt_worker = None
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -3098,7 +3204,12 @@ class ChatBubble(QWidget):
         self.input_field.returnPressed.connect(self._on_ask)
         self.ask_button = QPushButton("Sor / Fikir Ver")
         self.ask_button.clicked.connect(self._on_ask)
+        self.mic_button = QPushButton("\U0001F3A4")
+        self.mic_button.setFixedWidth(32)
+        self.mic_button.setToolTip("Sesle sor")
+        self.mic_button.clicked.connect(self._on_mic_clicked)
         input_row.addWidget(self.input_field, 1)
+        input_row.addWidget(self.mic_button)
         input_row.addWidget(self.ask_button)
         layout.addLayout(input_row)
 
@@ -3117,7 +3228,30 @@ class ChatBubble(QWidget):
         text = self.input_field.text().strip()
         if not text:
             return
+        self.last_ask_was_voice = False
         self.ask_requested.emit(text)
+
+    def _on_mic_clicked(self):
+        if self._stt_worker is not None and self._stt_worker.isRunning():
+            return
+        self.mic_button.setEnabled(False)
+        self.input_field.setPlaceholderText("Dinliyor...")
+        self._stt_worker = SpeechToTextWorker(self)
+        self._stt_worker.recognized.connect(self._on_voice_recognized)
+        self._stt_worker.failed.connect(self._on_voice_failed)
+        self._stt_worker.start()
+
+    def _on_voice_recognized(self, text):
+        self.mic_button.setEnabled(True)
+        self.input_field.setPlaceholderText("Bir soru yaz...")
+        self.input_field.setText(text)
+        self.last_ask_was_voice = True
+        self.ask_requested.emit(text)
+
+    def _on_voice_failed(self, message):
+        self.mic_button.setEnabled(True)
+        self.input_field.setPlaceholderText("Bir soru yaz...")
+        self.show_error(message)
 
     def _on_quick_question_selected(self, index):
         if index <= 0:
@@ -3817,6 +3951,7 @@ class CatCharacter(QWidget):
         self.screenshot_history = ScreenshotHistoryLog(SCREENSHOT_HISTORY_PATH)
         self.history_dialog = None
         self._pending_question = None
+        self._pending_answer_should_speak = False
 
         self._position_window()
         self._set_state("norm")
@@ -4016,6 +4151,9 @@ class CatCharacter(QWidget):
         self.bubble.show_thinking()
         self.bubble.set_request_count(self.config.register_gemini_request())
         self._pending_question = question
+        # Soru mikrofonla soruldugu icin ("ben sesle soruyorum, o da sesle
+        # cevap versin") cevap gelince sesle de okunacak mi - bkz. _on_answer.
+        self._pending_answer_should_speak = self.bubble.last_ask_was_voice
 
         self.worker = GeminiWorker(
             api_key,
@@ -4050,6 +4188,19 @@ class CatCharacter(QWidget):
         if self.bubble:
             self.bubble.show_response(text)
         self._log_history(text, is_error=False)
+        if self._pending_answer_should_speak:
+            self._speak(text)
+        self._pending_answer_should_speak = False
+
+    def _speak(self, text):
+        """Sesle sorulmus bir sorunun cevabini sesle okur (bkz.
+        TextToSpeechWorker) - referansi self.tts_worker'da tutulur, aksi
+        halde QThread nesnesi calisirken cop toplanabilir."""
+        self.tts_worker = TextToSpeechWorker(text, self)
+        self.tts_worker.failed.connect(
+            lambda msg: self.notifications.add("Sesli okuma basarisiz", msg)
+        )
+        self.tts_worker.start()
 
     def _on_answer_error(self, text):
         self._set_state("fear")
