@@ -13,11 +13,12 @@ class ChatEntry {
     this.isFavorite = false,
   });
 
-  ChatEntry copyWith({bool? isFavorite}) => ChatEntry(
+  ChatEntry copyWith({String? answer, bool? isError, bool? isFavorite}) =>
+      ChatEntry(
         time: time,
         question: question,
-        answer: answer,
-        isError: isError,
+        answer: answer ?? this.answer,
+        isError: isError ?? this.isError,
         isFavorite: isFavorite ?? this.isFavorite,
       );
 

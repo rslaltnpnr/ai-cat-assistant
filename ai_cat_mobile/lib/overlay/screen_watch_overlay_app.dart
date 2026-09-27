@@ -218,18 +218,24 @@ class _ScreenWatchOverlayState extends State<_ScreenWatchOverlay> {
     setState(() {
       _asking = true;
       _answerError = null;
+      _answer = null;
     });
     try {
-      final answer = await _geminiService.ask(
+      final buffer = StringBuffer();
+      await for (final piece in _geminiService.askStream(
         apiKey: settings.apiKey,
         modelName: settings.modelName,
         characterName: settings.characterName,
         question: question,
         imageBytes: _screenshotBytes,
-      );
+      )) {
+        buffer.write(piece);
+        if (!mounted) return;
+        setState(() => _answer = buffer.toString());
+      }
       if (!mounted) return;
       setState(() {
-        _answer = answer;
+        _answer = buffer.isEmpty ? '(Bos yanit dondu)' : buffer.toString();
         _questionController.clear();
       });
     } catch (exc) {

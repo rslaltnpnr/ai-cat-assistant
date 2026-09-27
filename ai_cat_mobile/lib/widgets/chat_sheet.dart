@@ -15,13 +15,21 @@ import '../services/settings_service.dart';
 import '../theme/app_colors.dart';
 
 /// Kediye dokununca acilan, metin ve/veya foto ile soru sorulabilen panel.
-/// Gecmis girisleri [HistoryService]'ten yuklenir; yeni sorular
-/// [onAsk] araciligiyla ust widget'a (HomeScreen) devredilir - cevap
-/// alindiginda ya da hata olustugunda kalici olarak orada kaydedilir.
+/// Gecmis girisleri [HistoryService]'ten yuklenir; yeni sorular [onAsk]
+/// araciligiyla ust widget'a (HomeScreen) devredilir - cevap alindiginda ya
+/// da hata olustugunda kalici olarak orada kaydedilir. Yanit parca parca
+/// geldikce (bkz. GeminiService.askStream) [onAsk]'a verilen `onChunk`
+/// geri cagrisi her parcada tetiklenir, boylece bu widget o anki soruya
+/// ait girdiyi canli guncelleyebilir; [onAsk]'in dondurdugu Future yine de
+/// TAM (birikmis) metni tasir ve kalici kayit icin kullanilir.
 class ChatSheet extends StatefulWidget {
   final SettingsService settings;
   final HistoryService history;
-  final Future<String> Function(String question, Uint8List? imageBytes) onAsk;
+  final Future<String> Function(
+    String question,
+    Uint8List? imageBytes,
+    void Function(String chunk) onChunk,
+  ) onAsk;
 
   const ChatSheet({
     super.key,
@@ -124,38 +132,58 @@ class _ChatSheetState extends State<ChatSheet> {
       bytes = await _pendingImage!.readAsBytes();
     }
 
-    try {
-      final answer = await widget.onAsk(question, bytes);
+    // Yanit parca parca gelirken canli gosterebilmek icin hemen bir yer
+    // tutucu girdi eklenir; her parca geldikce _updateStreamingEntry ile
+    // (listedeki konumu index degil, bu ChatEntry referansi ile bulunarak)
+    // guncellenir.
+    final placeholder = ChatEntry(
+      time: DateTime.now(),
+      question: question,
+      answer: 'Dusunuyor...',
+      isError: false,
+    );
+    setState(() {
+      _entries.insert(0, placeholder);
+      _controller.clear();
+      _pendingImage = null;
+    });
+
+    var current = placeholder;
+    var streamedText = '';
+    void onChunk(String piece) {
+      streamedText += piece;
       if (!mounted) return;
-      setState(() {
-        _entries.insert(
-          0,
-          ChatEntry(
-            time: DateTime.now(),
-            question: question,
-            answer: answer,
-            isError: false,
-          ),
-        );
-        _controller.clear();
-        _pendingImage = null;
-      });
+      setState(() => current = _updateStreamingEntry(current, streamedText));
+    }
+
+    try {
+      final answer = await widget.onAsk(question, bytes, onChunk);
+      if (!mounted) return;
+      setState(() => _updateStreamingEntry(current, answer));
     } catch (exc) {
       if (!mounted) return;
-      setState(() {
-        _entries.insert(
-          0,
-          ChatEntry(
-            time: DateTime.now(),
-            question: question,
-            answer: exc.toString(),
-            isError: true,
-          ),
-        );
-      });
+      setState(
+        () => _updateStreamingEntry(current, exc.toString(), isError: true),
+      );
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// [old] hala listede duruyorsa (kullanici "Gecmisi Temizle" gibi bir
+  /// islemle listeyi degistirmediyse) onu [answer] ile gunceller ve yeni
+  /// ChatEntry'yi dondurur; degilse sessizce [old]'u dondurur (ekranda
+  /// zaten gorunmuyor demektir, guncellenecek bir sey yok).
+  ChatEntry _updateStreamingEntry(
+    ChatEntry old,
+    String answer, {
+    bool isError = false,
+  }) {
+    final index = _entries.indexOf(old);
+    if (index == -1) return old;
+    final updated = old.copyWith(answer: answer, isError: isError);
+    _entries[index] = updated;
+    return updated;
   }
 
   void _clearHistory() {
